@@ -7,9 +7,8 @@ import io
 import json
 import os
 import hashlib
-from datetime import datetime, timezone
-
-from PIL import Image, ImageDraw, ImageFont, ImageFilter
+import math
+from datetime import datetime
 
 
 # ============================================================
@@ -18,21 +17,34 @@ from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 
-# Canal onde continuam funcionando as reações
+# Canal original das reações
 CANAL_REACOES_ID = 1556998399461691443
 
 # Canal da Loja Fortnite
 CANAL_LOJA_ID = 1214658145243234324
 
+# API
 FORTNITE_SHOP_URL = "https://fortnite-api.com/v2/shop"
-
 IDIOMA = "pt-BR"
 
+# Verificação da loja
 INTERVALO_VERIFICACAO = 5
 
-SHOP_STATE_FILE = "shop_state.json"
+# Quantidade de colunas
+COLUNAS = 4
 
-ITENS_POR_PAGINA = 4
+# Tamanho de cada card
+CARD_LARGURA = 300
+CARD_ALTURA = 340
+
+# Espaçamento
+ESPACO = 15
+
+# Margens
+MARGEM = 30
+
+# Arquivo que guarda o ID da mensagem
+SHOP_STATE_FILE = "shop_state.json"
 
 
 # ============================================================
@@ -41,7 +53,6 @@ ITENS_POR_PAGINA = 4
 
 intents = discord.Intents.default()
 intents.message_content = True
-
 
 bot = commands.Bot(
     command_prefix="!",
@@ -59,8 +70,6 @@ mensagem_loja_id = None
 loja_atual = []
 loja_data = None
 
-pagina_atual = 0
-
 
 # ============================================================
 # FONTES
@@ -68,24 +77,30 @@ pagina_atual = 0
 
 def carregar_fonte(tamanho, negrito=False):
 
-    caminhos = []
-
     if negrito:
+
         caminhos = [
             "C:/Windows/Fonts/arialbd.ttf",
             "C:/Windows/Fonts/segoeuib.ttf",
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
         ]
+
     else:
+
         caminhos = [
             "C:/Windows/Fonts/arial.ttf",
             "C:/Windows/Fonts/segoeui.ttf",
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
         ]
 
     for caminho in caminhos:
+
         try:
-            return ImageFont.truetype(caminho, tamanho)
+            return ImageFont.truetype(
+                caminho,
+                tamanho
+            )
+
         except Exception:
             pass
 
@@ -93,7 +108,14 @@ def carregar_fonte(tamanho, negrito=False):
 
 
 # ============================================================
-# ESTADO DO BOT
+# IMPORTAÇÃO DO PIL
+# ============================================================
+
+from PIL import Image, ImageDraw, ImageFont, ImageFilter
+
+
+# ============================================================
+# ESTADO
 # ============================================================
 
 def carregar_estado():
@@ -106,17 +128,31 @@ def carregar_estado():
 
     try:
 
-        with open(SHOP_STATE_FILE, "r", encoding="utf-8") as arquivo:
+        with open(
+            SHOP_STATE_FILE,
+            "r",
+            encoding="utf-8"
+        ) as arquivo:
+
             estado = json.load(arquivo)
 
-        ultima_loja_hash = estado.get("shop_hash")
-        mensagem_loja_id = estado.get("message_id")
+        ultima_loja_hash = estado.get(
+            "shop_hash"
+        )
 
-        print("Estado da loja carregado.")
+        mensagem_loja_id = estado.get(
+            "message_id"
+        )
+
+        print(
+            "Estado da loja carregado."
+        )
 
     except Exception as erro:
 
-        print(f"Erro ao carregar estado: {erro}")
+        print(
+            f"Erro carregando estado: {erro}"
+        )
 
 
 def salvar_estado():
@@ -143,18 +179,22 @@ def salvar_estado():
 
     except Exception as erro:
 
-        print(f"Erro ao salvar estado: {erro}")
+        print(
+            f"Erro salvando estado: {erro}"
+        )
 
 
 # ============================================================
-# API FORTNITE
+# API
 # ============================================================
 
 async def buscar_loja():
 
     try:
 
-        timeout = aiohttp.ClientTimeout(total=30)
+        timeout = aiohttp.ClientTimeout(
+            total=30
+        )
 
         async with aiohttp.ClientSession(
             timeout=timeout
@@ -170,7 +210,7 @@ async def buscar_loja():
                 if resposta.status != 200:
 
                     print(
-                        f"API retornou HTTP {resposta.status}"
+                        f"Erro API: HTTP {resposta.status}"
                     )
 
                     return None
@@ -179,23 +219,34 @@ async def buscar_loja():
 
     except Exception as erro:
 
-        print(f"Erro ao consultar Fortnite API: {erro}")
+        print(
+            f"Erro consultando API: {erro}"
+        )
 
         return None
 
 
 # ============================================================
-# UTILIDADES
+# UTILITÁRIOS
 # ============================================================
 
-def primeiro_valor(dicionario, *chaves, padrao=None):
+def primeiro_valor(
+    dicionario,
+    *chaves,
+    padrao=None
+):
 
-    if not isinstance(dicionario, dict):
+    if not isinstance(
+        dicionario,
+        dict
+    ):
         return padrao
 
     for chave in chaves:
 
-        valor = dicionario.get(chave)
+        valor = dicionario.get(
+            chave
+        )
 
         if valor is not None:
             return valor
@@ -203,27 +254,50 @@ def primeiro_valor(dicionario, *chaves, padrao=None):
     return padrao
 
 
+def obter_nome(item):
+
+    return primeiro_valor(
+        item,
+        "name",
+        "displayName",
+        "title",
+        padrao="Item"
+    )
+
+
 def obter_imagem(item):
 
-    if not isinstance(item, dict):
+    if not isinstance(
+        item,
+        dict
+    ):
         return None
 
-    imagens = item.get("images")
+    imagens = item.get(
+        "images"
+    )
 
-    if isinstance(imagens, dict):
+    if isinstance(
+        imagens,
+        dict
+    ):
 
         for chave in [
             "featured",
             "icon",
             "background",
-            "full_background",
-            "other"
+            "full_background"
         ]:
 
-            valor = imagens.get(chave)
+            imagem = imagens.get(
+                chave
+            )
 
-            if isinstance(valor, str) and valor.startswith("http"):
-                return valor
+            if (
+                isinstance(imagem, str)
+                and imagem.startswith("http")
+            ):
+                return imagem
 
     for chave in [
         "image",
@@ -231,30 +305,29 @@ def obter_imagem(item):
         "iconUrl"
     ]:
 
-        valor = item.get(chave)
+        imagem = item.get(
+            chave
+        )
 
-        if isinstance(valor, str) and valor.startswith("http"):
-            return valor
+        if (
+            isinstance(imagem, str)
+            and imagem.startswith("http")
+        ):
+            return imagem
 
     return None
 
 
-def obter_nome(item):
-
-    return primeiro_valor(
-        item,
-        "name",
-        "title",
-        "displayName",
-        padrao="Item desconhecido"
-    )
-
-
 def obter_tipo(item):
 
-    tipo = item.get("type")
+    tipo = item.get(
+        "type"
+    )
 
-    if isinstance(tipo, dict):
+    if isinstance(
+        tipo,
+        dict
+    ):
 
         return primeiro_valor(
             tipo,
@@ -266,16 +339,21 @@ def obter_tipo(item):
 
     return (
         item.get("displayType")
-        or item.get("type")
+        or tipo
         or "Item"
     )
 
 
 def obter_raridade(item):
 
-    raridade = item.get("rarity")
+    raridade = item.get(
+        "rarity"
+    )
 
-    if isinstance(raridade, dict):
+    if isinstance(
+        raridade,
+        dict
+    ):
 
         return primeiro_valor(
             raridade,
@@ -287,15 +365,12 @@ def obter_raridade(item):
 
     return (
         item.get("displayRarity")
-        or item.get("rarity")
+        or raridade
         or ""
     )
 
 
 def obter_preco(entry):
-
-    if not isinstance(entry, dict):
-        return None
 
     preco = primeiro_valor(
         entry,
@@ -306,7 +381,10 @@ def obter_preco(entry):
         "price"
     )
 
-    if isinstance(preco, dict):
+    if isinstance(
+        preco,
+        dict
+    ):
 
         preco = primeiro_valor(
             preco,
@@ -319,13 +397,18 @@ def obter_preco(entry):
 
         try:
             return int(preco)
+
         except Exception:
             pass
 
-    # Alguns formatos podem guardar o preço dentro de um bundle
-    bundle = entry.get("bundle")
+    bundle = entry.get(
+        "bundle"
+    )
 
-    if isinstance(bundle, dict):
+    if isinstance(
+        bundle,
+        dict
+    ):
 
         preco = primeiro_valor(
             bundle,
@@ -337,6 +420,7 @@ def obter_preco(entry):
 
             try:
                 return int(preco)
+
             except Exception:
                 pass
 
@@ -346,40 +430,62 @@ def obter_preco(entry):
 def formatar_preco(preco):
 
     if preco is None:
-        return "PREÇO N/D"
+        return "N/D"
 
-    return f"{preco:,}".replace(",", ".") + " V-BUCKS"
+    return (
+        f"{preco:,}"
+        .replace(",", ".")
+    )
 
 
 # ============================================================
-# EXTRAÇÃO DOS ITENS
+# EXTRAIR ITENS
 # ============================================================
 
 def extrair_itens(loja):
 
-    if not isinstance(loja, dict):
+    if not isinstance(
+        loja,
+        dict
+    ):
         return []
 
-    data = loja.get("data", loja)
+    data = loja.get(
+        "data",
+        loja
+    )
 
-    if not isinstance(data, dict):
+    if not isinstance(
+        data,
+        dict
+    ):
         return []
 
-    entries = data.get("entries", [])
+    entries = data.get(
+        "entries",
+        []
+    )
 
-    if not isinstance(entries, list):
+    if not isinstance(
+        entries,
+        list
+    ):
         return []
 
     resultado = []
 
     for entry in entries:
 
-        if not isinstance(entry, dict):
+        if not isinstance(
+            entry,
+            dict
+        ):
             continue
 
-        preco = obter_preco(entry)
+        preco = obter_preco(
+            entry
+        )
 
-        # Possíveis coleções usadas pela API
         colecoes = [
             "brItems",
             "items",
@@ -392,14 +498,22 @@ def extrair_itens(loja):
 
         encontrados = []
 
-        for nome_colecao in colecoes:
+        for colecao in colecoes:
 
-            valor = entry.get(nome_colecao)
+            valor = entry.get(
+                colecao
+            )
 
-            if isinstance(valor, list):
-                encontrados.extend(valor)
+            if isinstance(
+                valor,
+                list
+            ):
 
-        # Caso seja uma entrada diretamente com dados do item
+                encontrados.extend(
+                    valor
+                )
+
+        # Caso a própria entrada seja um item
         if not encontrados:
 
             if (
@@ -407,97 +521,121 @@ def extrair_itens(loja):
                 or entry.get("displayName")
                 or entry.get("images")
             ):
-                encontrados.append(entry)
+
+                encontrados.append(
+                    entry
+                )
 
         for item in encontrados:
 
-            if not isinstance(item, dict):
+            if not isinstance(
+                item,
+                dict
+            ):
                 continue
 
-            imagem = obter_imagem(item)
+            imagem = obter_imagem(
+                item
+            )
 
             if not imagem:
                 continue
 
-            nome = obter_nome(item)
-
-            raridade = obter_raridade(item)
-
-            tipo = obter_tipo(item)
-
             resultado.append({
-                "name": nome,
+
+                "name": obter_nome(
+                    item
+                ),
+
                 "image": imagem,
-                "rarity": raridade,
-                "type": tipo,
+
+                "rarity": obter_raridade(
+                    item
+                ),
+
+                "type": obter_tipo(
+                    item
+                ),
+
                 "price": preco
             })
 
-    # Remove duplicados
+    # Remover duplicados
     unicos = []
-
-    ids = set()
+    vistos = set()
 
     for item in resultado:
 
-        identificador = (
+        chave = (
             item["name"],
             item["image"],
             item["price"]
         )
 
-        if identificador in ids:
+        if chave in vistos:
             continue
 
-        ids.add(identificador)
-        unicos.append(item)
+        vistos.add(
+            chave
+        )
+
+        unicos.append(
+            item
+        )
 
     return unicos
 
 
 # ============================================================
-# COR DA RARIDADE
+# RARIDADE
 # ============================================================
 
 def cor_raridade(raridade):
 
-    texto = str(raridade).lower()
+    texto = str(
+        raridade
+    ).lower()
 
     if "legend" in texto:
-        return (255, 190, 55)
+        return (255, 190, 45)
 
     if "epic" in texto:
-        return (190, 70, 255)
+        return (180, 65, 255)
 
     if "rare" in texto:
-        return (50, 150, 255)
+        return (45, 145, 255)
 
     if "uncommon" in texto:
         return (70, 200, 110)
 
     if "marvel" in texto:
-        return (220, 50, 70)
+        return (220, 55, 65)
 
     if "star wars" in texto:
-        return (70, 130, 220)
+        return (80, 130, 220)
 
     if "gaming" in texto:
-        return (100, 180, 255)
+        return (90, 180, 255)
 
     return (100, 110, 130)
 
 
 # ============================================================
-# DOWNLOAD DE IMAGEM
+# DOWNLOAD DAS IMAGENS
 # ============================================================
 
-async def baixar_imagem(session, url):
+async def baixar_imagem(
+    session,
+    url
+):
 
     try:
 
         async with session.get(
             url,
-            timeout=aiohttp.ClientTimeout(total=20)
+            timeout=aiohttp.ClientTimeout(
+                total=20
+            )
         ) as resposta:
 
             if resposta.status != 200:
@@ -507,15 +645,13 @@ async def baixar_imagem(session, url):
 
             imagem = Image.open(
                 io.BytesIO(dados)
-            ).convert("RGB")
+            ).convert(
+                "RGB"
+            )
 
             return imagem
 
-    except Exception as erro:
-
-        print(
-            f"Erro baixando imagem {url}: {erro}"
-        )
+    except Exception:
 
         return None
 
@@ -524,24 +660,28 @@ async def baixar_imagem(session, url):
 # AJUSTAR IMAGEM
 # ============================================================
 
-def preencher_imagem(imagem, tamanho):
-
-    largura, altura = tamanho
+def encaixar_imagem(
+    imagem,
+    largura,
+    altura
+):
 
     if imagem is None:
 
         return Image.new(
             "RGB",
-            tamanho,
-            (35, 40, 50)
+            (largura, altura),
+            (30, 34, 45)
         )
 
     proporcao_original = (
-        imagem.width / imagem.height
+        imagem.width /
+        imagem.height
     )
 
     proporcao_destino = (
-        largura / altura
+        largura /
+        altura
     )
 
     if proporcao_original > proporcao_destino:
@@ -549,7 +689,8 @@ def preencher_imagem(imagem, tamanho):
         nova_altura = altura
 
         nova_largura = int(
-            altura * proporcao_original
+            altura *
+            proporcao_original
         )
 
     else:
@@ -557,23 +698,29 @@ def preencher_imagem(imagem, tamanho):
         nova_largura = largura
 
         nova_altura = int(
-            largura / proporcao_original
+            largura /
+            proporcao_original
         )
 
     imagem = imagem.resize(
-        (nova_largura, nova_altura),
+        (
+            nova_largura,
+            nova_altura
+        ),
         Image.Resampling.LANCZOS
     )
 
     esquerda = (
-        nova_largura - largura
+        nova_largura -
+        largura
     ) // 2
 
     topo = (
-        nova_altura - altura
+        nova_altura -
+        altura
     ) // 2
 
-    imagem = imagem.crop(
+    return imagem.crop(
         (
             esquerda,
             topo,
@@ -582,132 +729,139 @@ def preencher_imagem(imagem, tamanho):
         )
     )
 
-    return imagem
-
 
 # ============================================================
-# TEXTO COM RETICÊNCIAS
+# TEXTO LIMITADO
 # ============================================================
 
-def texto_limitado(draw, texto, fonte, largura):
+def limitar_texto(
+    draw,
+    texto,
+    fonte,
+    largura
+):
 
-    if draw.textbbox(
-        (0, 0),
-        texto,
-        font=fonte
-    )[2] <= largura:
+    texto = str(
+        texto
+    )
 
-        return texto
+    while len(texto) > 1:
 
-    while len(texto) > 3:
+        caixa = draw.textbbox(
+            (0, 0),
+            texto,
+            font=fonte
+        )
+
+        if (
+            caixa[2] -
+            caixa[0]
+        ) <= largura:
+
+            return texto
 
         texto = texto[:-1]
 
-        teste = texto + "..."
-
-        if draw.textbbox(
-            (0, 0),
-            teste,
-            font=fonte
-        )[2] <= largura:
-
-            return teste
-
-    return "..."
+    return texto
 
 
 # ============================================================
-# DESENHAR CARD
+# CARD
 # ============================================================
 
 def desenhar_card(
     canvas,
+    draw,
     item,
     imagem,
     x,
-    y,
-    largura,
-    altura
+    y
 ):
 
-    draw = ImageDraw.Draw(canvas)
-
-    # Fundo
+    # Card
     draw.rounded_rectangle(
         (
             x,
             y,
-            x + largura,
-            y + altura
+            x + CARD_LARGURA,
+            y + CARD_ALTURA
         ),
-        radius=18,
-        fill=(24, 27, 36),
-        outline=(70, 76, 92),
+        radius=14,
+        fill=(25, 28, 37),
+        outline=(65, 70, 85),
         width=2
     )
 
-    # Cor da raridade
     cor = cor_raridade(
-        item.get("rarity", "")
+        item["rarity"]
     )
 
     # Área da imagem
-    margem = 8
+    imagem_largura = CARD_LARGURA
+    imagem_altura = 245
 
-    area_imagem = (
-        largura - margem * 2,
-        altura - 105
-    )
-
-    imagem = preencher_imagem(
+    imagem = encaixar_imagem(
         imagem,
-        area_imagem
+        imagem_largura,
+        imagem_altura
     )
 
     canvas.paste(
         imagem,
         (
-            x + margem,
-            y + margem
+            x,
+            y
         )
     )
 
-    # Faixa da raridade
+    # Barra de raridade
     draw.rectangle(
         (
-            x + margem,
-            y + margem,
-            x + largura - margem,
-            y + margem + 7
+            x,
+            y,
+            x + CARD_LARGURA,
+            y + 7
         ),
         fill=cor
     )
 
+    # Fundo inferior
+    draw.rectangle(
+        (
+            x,
+            y + 245,
+            x + CARD_LARGURA,
+            y + CARD_ALTURA
+        ),
+        fill=(20, 23, 31)
+    )
+
     fonte_nome = carregar_fonte(
-        22,
-        negrito=True
+        19,
+        True
     )
 
     fonte_tipo = carregar_fonte(
-        15
+        13,
+        False
     )
 
     fonte_preco = carregar_fonte(
-        18,
-        negrito=True
+        17,
+        True
     )
 
-    nome = texto_limitado(
+    nome = limitar_texto(
         draw,
-        str(item.get("name", "Item")),
+        item["name"],
         fonte_nome,
-        largura - 30
+        CARD_LARGURA - 24
     )
 
     draw.text(
         (
-            x + 15,
-            y + altura - 91
+            x + 12,
+            y + 258
         ),
         nome,
         fill=(255, 255, 255),
@@ -715,97 +869,165 @@ def desenhar_card(
     )
 
     tipo = str(
-        item.get("type", "Item")
+        item["type"]
+    )
+
+    tipo = limitar_texto(
+        draw,
+        tipo,
+        fonte_tipo,
+        CARD_LARGURA - 24
     )
 
     draw.text(
         (
-            x + 15,
-            y + altura - 61
+            x + 12,
+            y + 286
         ),
         tipo,
-        fill=(170, 176, 190),
+        fill=(155, 162, 178),
         font=fonte_tipo
     )
 
+    # V-Bucks
     preco = formatar_preco(
-        item.get("price")
+        item["price"]
     )
 
-    # Preço
     draw.text(
         (
-            x + 15,
-            y + altura - 37
+            x + 12,
+            y + 309
         ),
-        "●  " + preco,
+        f"◉ {preco} V-BUCKS",
         fill=(255, 255, 255),
         font=fonte_preco
     )
 
 
 # ============================================================
-# CRIAR IMAGEM DA PÁGINA
+# CRIAR IMAGEM COMPLETA
 # ============================================================
 
 async def criar_imagem_loja(
     itens,
-    pagina,
-    total_paginas,
     data_loja
 ):
 
-    LARGURA = 1200
-    ALTURA = 930
+    linhas = math.ceil(
+        len(itens) /
+        COLUNAS
+    )
+
+    # Cabeçalho
+    CABECALHO = 125
+
+    # Rodapé
+    RODAPE = 70
+
+    largura = (
+        MARGEM * 2
+        +
+        COLUNAS * CARD_LARGURA
+        +
+        (COLUNAS - 1) * ESPACO
+    )
+
+    altura = (
+        CABECALHO
+        +
+        linhas * CARD_ALTURA
+        +
+        (linhas - 1) * ESPACO
+        +
+        RODAPE
+        +
+        MARGEM
+    )
 
     canvas = Image.new(
         "RGB",
-        (LARGURA, ALTURA),
-        (12, 14, 20)
+        (
+            largura,
+            altura
+        ),
+        (12, 15, 22)
     )
 
-    draw = ImageDraw.Draw(canvas)
+    draw = ImageDraw.Draw(
+        canvas
+    )
 
-    # Fundo com gradiente simples
-    for y in range(ALTURA):
+    # ========================================================
+    # FUNDO
+    # ========================================================
 
-        fator = y / ALTURA
+    for y in range(
+        altura
+    ):
 
-        r = int(12 + fator * 8)
-        g = int(14 + fator * 12)
-        b = int(20 + fator * 20)
+        fator = y / altura
+
+        r = int(
+            10 + fator * 10
+        )
+
+        g = int(
+            13 + fator * 13
+        )
+
+        b = int(
+            21 + fator * 25
+        )
 
         draw.line(
             (
                 0,
                 y,
-                LARGURA,
+                largura,
                 y
             ),
-            fill=(r, g, b)
+            fill=(
+                r,
+                g,
+                b
+            )
         )
 
-    # Título
+    # ========================================================
+    # TÍTULO
+    # ========================================================
+
     fonte_titulo = carregar_fonte(
         38,
-        negrito=True
+        True
     )
 
     fonte_subtitulo = carregar_fonte(
         17
     )
 
+    fonte_info = carregar_fonte(
+        16
+    )
+
     draw.text(
-        (40, 25),
+        (
+            MARGEM,
+            25
+        ),
         "LOJA DE ITENS",
         fill=(255, 255, 255),
         font=fonte_titulo
     )
 
     draw.text(
-        (42, 72),
-        "FORTNITE • ATUALIZAÇÃO AUTOMÁTICA",
-        fill=(150, 160, 180),
+        (
+            MARGEM + 3,
+            75
+        ),
+        "FORTNITE • LOJA ATUAL",
+        fill=(145, 153, 170),
         font=fonte_subtitulo
     )
 
@@ -816,7 +1038,8 @@ async def criar_imagem_loja(
 
             data_formatada = (
                 datetime.fromisoformat(
-                    data_loja.replace(
+                    str(data_loja)
+                    .replace(
                         "Z",
                         "+00:00"
                     )
@@ -835,62 +1058,107 @@ async def criar_imagem_loja(
 
     else:
 
-        data_formatada = "Agora"
+        data_formatada = "Atualizado agora"
 
-    draw.text(
-        (850, 48),
-        data_formatada,
-        fill=(180, 185, 200),
-        font=fonte_subtitulo
+    texto_data = (
+        f"Atualizado: {data_formatada}"
     )
 
-    # Linha decorativa
+    caixa = draw.textbbox(
+        (
+            0,
+            0
+        ),
+        texto_data,
+        font=fonte_info
+    )
+
+    draw.text(
+        (
+            largura -
+            MARGEM -
+            (caixa[2] - caixa[0]),
+            40
+        ),
+        texto_data,
+        fill=(170, 176, 190),
+        font=fonte_info
+    )
+
+    # Linha
     draw.line(
-        (40, 105, 1160, 105),
-        fill=(55, 62, 78),
+        (
+            MARGEM,
+            112,
+            largura - MARGEM,
+            112
+        ),
+        fill=(60, 66, 80),
         width=2
     )
 
-    # Itens da página
-    inicio = pagina * ITENS_POR_PAGINA
-
-    itens_pagina = itens[
-        inicio:
-        inicio + ITENS_POR_PAGINA
-    ]
-
-    # Dimensões dos cards
-    card_largura = 545
-    card_altura = 370
-
-    posicoes = [
-        (40, 130),
-        (615, 130),
-        (40, 520),
-        (615, 520)
-    ]
+    # ========================================================
+    # BAIXAR IMAGENS
+    # ========================================================
 
     async with aiohttp.ClientSession() as session:
 
-        tarefas = []
-
-        for item in itens_pagina:
-
-            tarefas.append(
-                baixar_imagem(
-                    session,
-                    item["image"]
-                )
+        tarefas = [
+            baixar_imagem(
+                session,
+                item["image"]
             )
+            for item in itens
+        ]
 
         imagens = await asyncio.gather(
             *tarefas,
             return_exceptions=True
         )
 
-    for indice, item in enumerate(itens_pagina):
+    # ========================================================
+    # DESENHAR TODOS OS CARDS
+    # ========================================================
 
-        imagem = imagens[indice]
+    for indice, item in enumerate(
+        itens
+    ):
+
+        linha = (
+            indice //
+            COLUNAS
+        )
+
+        coluna = (
+            indice %
+            COLUNAS
+        )
+
+        x = (
+            MARGEM
+            +
+            coluna *
+            (
+                CARD_LARGURA
+                +
+                ESPACO
+            )
+        )
+
+        y = (
+            CABECALHO
+            +
+            linha *
+            (
+                CARD_ALTURA
+                +
+                ESPACO
+            )
+        )
+
+        imagem = imagens[
+            indice
+        ]
 
         if isinstance(
             imagem,
@@ -899,101 +1167,97 @@ async def criar_imagem_loja(
 
             imagem = None
 
-        x, y = posicoes[indice]
-
         desenhar_card(
             canvas,
+            draw,
             item,
             imagem,
             x,
-            y,
-            card_largura,
-            card_altura
+            y
         )
 
-    # Cards vazios
-    for indice in range(
-        len(itens_pagina),
-        4
-    ):
+    # ========================================================
+    # RODAPÉ
+    # ========================================================
 
-        x, y = posicoes[indice]
-
-        draw.rounded_rectangle(
-            (
-                x,
-                y,
-                x + card_largura,
-                y + card_altura
-            ),
-            radius=18,
-            fill=(20, 23, 30),
-            outline=(45, 50, 62),
-            width=2
-        )
-
-        fonte = carregar_fonte(
-            20,
-            negrito=True
-        )
-
-        texto = "SEM ITEM"
-
-        caixa = draw.textbbox(
-            (0, 0),
-            texto,
-            font=fonte
-        )
-
-        tx = x + (
-            card_largura -
-            (caixa[2] - caixa[0])
-        ) / 2
-
-        ty = y + (
-            card_altura -
-            (caixa[3] - caixa[1])
-        ) / 2
-
-        draw.text(
-            (tx, ty),
-            texto,
-            fill=(80, 85, 100),
-            font=fonte
-        )
-
-    # Rodapé
-    fonte_rodape = carregar_fonte(
-        17
+    y_rodape = (
+        altura -
+        RODAPE +
+        15
     )
 
-    texto_rodape = (
-        f"Página {pagina + 1}/{total_paginas}  •  "
-        f"{len(itens)} itens encontrados"
+    draw.line(
+        (
+            MARGEM,
+            y_rodape - 8,
+            largura - MARGEM,
+            y_rodape - 8
+        ),
+        fill=(60, 66, 80),
+        width=2
+    )
+
+    texto = (
+        f"{len(itens)} itens na loja"
+        " • Atualização automática"
     )
 
     caixa = draw.textbbox(
-        (0, 0),
-        texto_rodape,
-        font=fonte_rodape
+        (
+            0,
+            0
+        ),
+        texto,
+        font=fonte_subtitulo
     )
 
     draw.text(
         (
-            (LARGURA - (caixa[2] - caixa[0])) / 2,
-            895
+            (
+                largura -
+                (
+                    caixa[2] -
+                    caixa[0]
+                )
+            ) / 2,
+            y_rodape + 15
         ),
-        texto_rodape,
-        fill=(150, 155, 170),
-        font=fonte_rodape
+        texto,
+        fill=(140, 148, 165),
+        font=fonte_subtitulo
     )
 
-    # Salvar na memória
+    # ========================================================
+    # COMPRESSÃO
+    # ========================================================
+
     buffer = io.BytesIO()
+
+    # Se ficar muito grande, reduz um pouco
+    if altura > 3500:
+
+        nova_altura = 3500
+
+        nova_largura = int(
+            largura *
+            (
+                nova_altura /
+                altura
+            )
+        )
+
+        canvas = canvas.resize(
+            (
+                nova_largura,
+                nova_altura
+            ),
+            Image.Resampling.LANCZOS
+        )
 
     canvas.save(
         buffer,
-        format="PNG",
+        format="JPEG",
+        quality=88,
         optimize=True
     )
 
@@ -1006,22 +1270,37 @@ async def criar_imagem_loja(
 # HASH DA LOJA
 # ============================================================
 
-def obter_hash_loja(loja):
+def obter_hash_loja(
+    loja
+):
 
-    if not isinstance(loja, dict):
+    if not isinstance(
+        loja,
+        dict
+    ):
         return None
 
-    data = loja.get("data", loja)
+    data = loja.get(
+        "data",
+        loja
+    )
 
-    if not isinstance(data, dict):
+    if not isinstance(
+        data,
+        dict
+    ):
         return None
 
-    shop_hash = data.get("hash")
+    shop_hash = data.get(
+        "hash"
+    )
 
     if shop_hash:
-        return str(shop_hash)
 
-    # Fallback caso a API não envie hash
+        return str(
+            shop_hash
+        )
+
     entries = data.get(
         "entries",
         []
@@ -1036,7 +1315,9 @@ def obter_hash_loja(loja):
         )
 
         return hashlib.sha256(
-            texto.encode("utf-8")
+            texto.encode(
+                "utf-8"
+            )
         ).hexdigest()
 
     except Exception:
@@ -1044,14 +1325,25 @@ def obter_hash_loja(loja):
         return None
 
 
-def obter_data_loja(loja):
+def obter_data_loja(
+    loja
+):
 
-    if not isinstance(loja, dict):
+    if not isinstance(
+        loja,
+        dict
+    ):
         return None
 
-    data = loja.get("data", loja)
+    data = loja.get(
+        "data",
+        loja
+    )
 
-    if not isinstance(data, dict):
+    if not isinstance(
+        data,
+        dict
+    ):
         return None
 
     return (
@@ -1062,221 +1354,7 @@ def obter_data_loja(loja):
 
 
 # ============================================================
-# VIEW DOS BOTÕES
-# ============================================================
-
-class LojaView(discord.ui.View):
-
-    def __init__(self):
-
-        super().__init__(
-            timeout=None
-        )
-
-    @discord.ui.button(
-        label="◀️",
-        style=discord.ButtonStyle.secondary,
-        custom_id="loja_anterior"
-    )
-    async def anterior(
-        self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button
-    ):
-
-        global pagina_atual
-
-        total_paginas = max(
-            1,
-            (
-                len(loja_atual)
-                + ITENS_POR_PAGINA
-                - 1
-            ) // ITENS_POR_PAGINA
-        )
-
-        pagina_atual -= 1
-
-        if pagina_atual < 0:
-            pagina_atual = total_paginas - 1
-
-        await atualizar_pagina(
-            interaction
-        )
-
-    @discord.ui.button(
-        label="🔄",
-        style=discord.ButtonStyle.primary,
-        custom_id="loja_atualizar"
-    )
-    async def atualizar(
-        self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button
-    ):
-
-        await interaction.response.defer()
-
-        await verificar_loja(
-            forcar=True
-        )
-
-        # Se não houve alteração, ainda atualizamos a página
-        try:
-
-            await interaction.message.edit(
-                attachments=[],
-                embed=await criar_embed_pagina()
-            )
-
-            arquivo = await criar_arquivo_pagina()
-
-            embed = await criar_embed_pagina()
-
-            await interaction.message.edit(
-                embed=embed,
-                attachments=[
-                    arquivo
-                ],
-                view=LojaView()
-            )
-
-        except Exception as erro:
-
-            print(
-                f"Erro ao atualizar botão: {erro}"
-            )
-
-    @discord.ui.button(
-        label="▶️",
-        style=discord.ButtonStyle.secondary,
-        custom_id="loja_proxima"
-    )
-    async def proximo(
-        self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button
-    ):
-
-        global pagina_atual
-
-        total_paginas = max(
-            1,
-            (
-                len(loja_atual)
-                + ITENS_POR_PAGINA
-                - 1
-            ) // ITENS_POR_PAGINA
-        )
-
-        pagina_atual += 1
-
-        if pagina_atual >= total_paginas:
-            pagina_atual = 0
-
-        await atualizar_pagina(
-            interaction
-        )
-
-
-# ============================================================
-# GERAR ARQUIVO DA PÁGINA
-# ============================================================
-
-async def criar_arquivo_pagina():
-
-    total_paginas = max(
-        1,
-        (
-            len(loja_atual)
-            + ITENS_POR_PAGINA
-            - 1
-        ) // ITENS_POR_PAGINA
-    )
-
-    imagem = await criar_imagem_loja(
-        loja_atual,
-        pagina_atual,
-        total_paginas,
-        loja_data
-    )
-
-    return discord.File(
-        imagem,
-        filename="fortnite_shop.png"
-    )
-
-
-# ============================================================
-# EMBED DA PÁGINA
-# ============================================================
-
-async def criar_embed_pagina():
-
-    total_paginas = max(
-        1,
-        (
-            len(loja_atual)
-            + ITENS_POR_PAGINA
-            - 1
-        ) // ITENS_POR_PAGINA
-    )
-
-    embed = discord.Embed(
-        color=discord.Color.from_rgb(
-            45,
-            110,
-            220
-        )
-    )
-
-    embed.set_image(
-        url="attachment://fortnite_shop.png"
-    )
-
-    embed.set_footer(
-        text=(
-            f"Página {pagina_atual + 1}/{total_paginas} "
-            f"• Atualizado automaticamente"
-        )
-    )
-
-    return embed
-
-
-# ============================================================
-# ATUALIZAR PÁGINA
-# ============================================================
-
-async def atualizar_pagina(
-    interaction
-):
-
-    try:
-
-        await interaction.response.defer()
-
-        arquivo = await criar_arquivo_pagina()
-
-        embed = await criar_embed_pagina()
-
-        await interaction.message.edit(
-            embed=embed,
-            attachments=[
-                arquivo
-            ],
-            view=LojaView()
-        )
-
-    except Exception as erro:
-
-        print(
-            f"Erro ao mudar página: {erro}"
-        )
-
-
-# ============================================================
-# ATUALIZAR MENSAGEM DA LOJA
+# ATUALIZAR MENSAGEM
 # ============================================================
 
 async def atualizar_mensagem_loja():
@@ -1298,20 +1376,46 @@ async def atualizar_mensagem_loja():
         except Exception as erro:
 
             print(
-                f"Não consegui acessar o canal da loja: {erro}"
+                f"Erro acessando canal: {erro}"
             )
 
             return
 
-    arquivo = await criar_arquivo_pagina()
+    imagem = await criar_imagem_loja(
+        loja_atual,
+        loja_data
+    )
 
-    embed = await criar_embed_pagina()
+    arquivo = discord.File(
+        imagem,
+        filename="fortnite_loja.jpg"
+    )
 
-    view = LojaView()
+    embed = discord.Embed(
+        color=discord.Color.from_rgb(
+            45,
+            110,
+            220
+        )
+    )
+
+    embed.set_image(
+        url="attachment://fortnite_loja.jpg"
+    )
+
+    embed.set_footer(
+        text=(
+            "Fortnite Item Shop • "
+            "Atualização automática"
+        )
+    )
 
     mensagem = None
 
-    # Tentar encontrar mensagem existente
+    # ========================================================
+    # TENTAR MENSAGEM SALVA
+    # ========================================================
+
     if mensagem_loja_id:
 
         try:
@@ -1324,7 +1428,10 @@ async def atualizar_mensagem_loja():
 
             mensagem = None
 
-    # Se não encontrou, procura mensagens recentes do bot
+    # ========================================================
+    # PROCURAR MENSAGEM DO BOT
+    # ========================================================
+
     if mensagem is None:
 
         try:
@@ -1339,6 +1446,7 @@ async def atualizar_mensagem_loja():
                 ):
 
                     mensagem = msg
+
                     mensagem_loja_id = msg.id
 
                     break
@@ -1346,10 +1454,13 @@ async def atualizar_mensagem_loja():
         except Exception as erro:
 
             print(
-                f"Erro procurando mensagem antiga: {erro}"
+                f"Erro procurando mensagem: {erro}"
             )
 
-    # Editar mensagem existente
+    # ========================================================
+    # EDITAR
+    # ========================================================
+
     if mensagem:
 
         try:
@@ -1358,31 +1469,22 @@ async def atualizar_mensagem_loja():
                 embed=embed,
                 attachments=[
                     arquivo
-                ],
-                view=view
+                ]
+            )
+
+            print(
+                "Mensagem da loja atualizada."
             )
 
         except Exception as erro:
 
             print(
-                f"Erro editando mensagem: {erro}"
+                f"Erro editando loja: {erro}"
             )
 
-            try:
-
-                mensagem = await canal.send(
-                    embed=embed,
-                    file=arquivo,
-                    view=view
-                )
-
-                mensagem_loja_id = mensagem.id
-
-            except Exception as erro2:
-
-                print(
-                    f"Erro criando nova mensagem: {erro2}"
-                )
+    # ========================================================
+    # CRIAR
+    # ========================================================
 
     else:
 
@@ -1390,16 +1492,21 @@ async def atualizar_mensagem_loja():
 
             mensagem = await canal.send(
                 embed=embed,
-                file=arquivo,
-                view=view
+                file=arquivo
             )
 
-            mensagem_loja_id = mensagem.id
+            mensagem_loja_id = (
+                mensagem.id
+            )
+
+            print(
+                "Nova mensagem da loja criada."
+            )
 
         except Exception as erro:
 
             print(
-                f"Erro enviando loja: {erro}"
+                f"Erro criando mensagem: {erro}"
             )
 
     salvar_estado()
@@ -1416,7 +1523,6 @@ async def verificar_loja(
     global ultima_loja_hash
     global loja_atual
     global loja_data
-    global pagina_atual
 
     loja = await buscar_loja()
 
@@ -1430,16 +1536,21 @@ async def verificar_loja(
     if not novo_hash:
 
         print(
-            "Não foi possível identificar a loja."
+            "Não foi possível identificar o hash da loja."
         )
 
         return False
 
     mudou = (
-        novo_hash != ultima_loja_hash
+        novo_hash !=
+        ultima_loja_hash
     )
 
-    if not mudou and not forcar:
+    if (
+        not mudou
+        and
+        not forcar
+    ):
 
         return False
 
@@ -1450,7 +1561,7 @@ async def verificar_loja(
     if not itens:
 
         print(
-            "A API retornou a loja, mas nenhum item foi encontrado."
+            "Nenhum item encontrado."
         )
 
         return False
@@ -1461,12 +1572,9 @@ async def verificar_loja(
         loja
     )
 
-    ultima_loja_hash = novo_hash
-
-    # Sempre começa na primeira página quando a loja muda
-    if mudou:
-
-        pagina_atual = 0
+    ultima_loja_hash = (
+        novo_hash
+    )
 
     print(
         f"Loja encontrada: {len(itens)} itens"
@@ -1484,7 +1592,7 @@ async def verificar_loja(
 
 
 # ============================================================
-# LOOP AUTOMÁTICO
+# LOOP
 # ============================================================
 
 @tasks.loop(
@@ -1500,36 +1608,28 @@ async def verificar_loja_loop():
 
 
 @verificar_loja_loop.before_loop
-async def antes_verificar_loja():
+async def antes_loop():
 
     await bot.wait_until_ready()
 
 
 # ============================================================
-# EVENTO READY
+# READY
 # ============================================================
 
 @bot.event
 async def on_ready():
 
-    global loja_atual
-
     print(
-        f"Bot conectado como {bot.user}"
-    )
-
-    print(
-        f"ID: {bot.user.id}"
+        f"Bot conectado: {bot.user}"
     )
 
     carregar_estado()
 
-    # Evita iniciar o loop duas vezes
     if not verificar_loja_loop.is_running():
 
         verificar_loja_loop.start()
 
-    # Primeira consulta
     await verificar_loja()
 
 
@@ -1538,20 +1638,35 @@ async def on_ready():
 # ============================================================
 
 @bot.event
-async def on_message(message):
+async def on_message(
+    message
+):
 
     if message.author.bot:
         return
 
-    # NÃO ALTERADO
-    # Canal original das reações
-    if message.channel.id == CANAL_REACOES_ID:
+    # ========================================================
+    # SISTEMA ORIGINAL — MANTIDO
+    # ========================================================
+
+    if (
+        message.channel.id ==
+        CANAL_REACOES_ID
+    ):
 
         try:
 
-            await message.add_reaction("🟢")
-            await message.add_reaction("⚖️")
-            await message.add_reaction("🔴")
+            await message.add_reaction(
+                "🟢"
+            )
+
+            await message.add_reaction(
+                "⚖️"
+            )
+
+            await message.add_reaction(
+                "🔴"
+            )
 
         except Exception as erro:
 
@@ -1565,7 +1680,7 @@ async def on_message(message):
 
 
 # ============================================================
-# COMANDO TESTE
+# COMANDO DE TESTE
 # ============================================================
 
 @bot.command(
@@ -1574,10 +1689,12 @@ async def on_message(message):
 @commands.has_permissions(
     administrator=True
 )
-async def teste_loja(ctx):
+async def teste_loja(
+    ctx
+):
 
     await ctx.send(
-        "🔄 Atualizando a Loja Fortnite..."
+        "🔄 Buscando a loja atual..."
     )
 
     sucesso = await verificar_loja(
@@ -1598,7 +1715,7 @@ async def teste_loja(ctx):
 
 
 # ============================================================
-# TRATAMENTO DE ERRO
+# ERRO DO COMANDO
 # ============================================================
 
 @teste_loja.error
@@ -1613,18 +1730,18 @@ async def teste_loja_error(
     ):
 
         await ctx.send(
-            "❌ Você precisa ser administrador para usar esse comando."
+            "❌ Você precisa ser administrador."
         )
 
 
 # ============================================================
-# INICIAR BOT
+# INICIAR
 # ============================================================
 
 if not TOKEN:
 
     raise RuntimeError(
-        "A variável DISCORD_TOKEN não foi configurada."
+        "DISCORD_TOKEN não foi configurado."
     )
 
 
