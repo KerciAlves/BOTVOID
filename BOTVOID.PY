@@ -18,47 +18,33 @@ from PIL import Image, ImageDraw, ImageFont, ImageFile
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 
-# Canal onde o bot adiciona 🟢 ⚖️ 🔴
 CANAL_REACOES_ID = 1556998399461691443
-
-# Canal da loja Fortnite
 CANAL_LOJA_ID = 1214658145243234324
 
-# API Fortnite
 FORTNITE_SHOP_URL = "https://fortnite-api.com/v2/shop"
 
-# Idioma
 IDIOMA = "pt-BR"
 
-# Verificação a cada 5 minutos
+# Verificação da API a cada 5 minutos
 INTERVALO_VERIFICACAO = 300
 
-
-# ============================================================
-# BACKGROUND
-# ============================================================
-
-FUNDO_URL = (
-    "https://media.discordapp.net/attachments/"
-    "671152891360313385/1296301322030678081/"
-    "17-10-2024_v1.png"
-    "?ex=6ac7022f&is=6ac5b0af"
-    "&hm=77c4b5e93762a727d49ef75813aac00e0208e2e076d73272dd252fe4fda82969"
-    "&=&format=webp&quality=lossless&width=1536&height=1027"
-)
+# Estado persistente
+SHOP_STATE_FILE = "shop_state.json"
 
 
 # ============================================================
-# IMAGEM FINAL
+# CONFIGURAÇÃO DA IMAGEM
 # ============================================================
 
-# Reduzido de 1536 para diminuir bastante o consumo de RAM.
+# A imagem é criada pelo próprio bot.
+# Nenhum background externo é utilizado.
+
 LARGURA_FINAL = 1200
 
 COLUNAS = 4
 
-MARGEM_LATERAL = 30
-MARGEM_TOPO = 190
+MARGEM_LATERAL = 28
+MARGEM_TOPO = 115
 
 ESPACO_HORIZONTAL = 12
 ESPACO_VERTICAL = 14
@@ -67,40 +53,24 @@ CARD_LARGURA = 277
 CARD_ALTURA = 205
 
 IMAGEM_LARGURA = 250
-IMAGEM_ALTURA = 135
+IMAGEM_ALTURA = 130
 
-
-# ============================================================
-# CONTROLE DE MEMÓRIA
-# ============================================================
-
-# Limite de download de cada imagem.
-MAX_IMAGEM_DOWNLOAD = 1 * 1024 * 1024
-
-# Limite do background.
-MAX_BACKGROUND_DOWNLOAD = 4 * 1024 * 1024
-
-# Máximo de pixels para uma imagem de item.
-MAX_PIXELS_IMAGEM = 2_000_000
-
-# Qualidade final.
-QUALIDADE_JPEG = 60
-
-# Altura máxima absoluta da imagem.
-# Evita que uma loja excepcionalmente grande consuma RAM.
 ALTURA_MAXIMA = 5000
 
+QUALIDADE_JPEG = 60
+
+MAX_IMAGEM_DOWNLOAD = 1 * 1024 * 1024
+
+MAX_OFERTAS = 80
+
+
+# ============================================================
+# PILLOW
+# ============================================================
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
-Image.MAX_IMAGE_PIXELS = MAX_PIXELS_IMAGEM
-
-
-# ============================================================
-# ESTADO
-# ============================================================
-
-SHOP_STATE_FILE = "shop_state.json"
+Image.MAX_IMAGE_PIXELS = 2_000_000
 
 
 # ============================================================
@@ -108,6 +78,7 @@ SHOP_STATE_FILE = "shop_state.json"
 # ============================================================
 
 intents = discord.Intents.default()
+
 intents.message_content = True
 intents.messages = True
 
@@ -115,6 +86,31 @@ bot = commands.Bot(
     command_prefix="!",
     intents=intents
 )
+
+
+# ============================================================
+# CORES
+# ============================================================
+
+COR_FUNDO = (10, 12, 20)
+
+COR_FUNDO_SECUNDARIO = (15, 18, 30)
+
+COR_CARD = (21, 24, 38)
+
+COR_CARD_BORDA = (48, 54, 78)
+
+COR_AREA_IMAGEM = (12, 15, 25)
+
+COR_TITULO = (255, 255, 255)
+
+COR_SUBTITULO = (170, 178, 200)
+
+COR_PRECO = (255, 211, 66)
+
+COR_TIPO = (135, 145, 175)
+
+COR_DESTAQUE = (65, 105, 255)
 
 
 # ============================================================
@@ -148,7 +144,7 @@ def carregar_estado():
     except Exception as erro:
 
         print(
-            f"[AVISO] Erro lendo estado: {erro}"
+            f"[AVISO] Não foi possível ler o estado: {erro}"
         )
 
         return {
@@ -185,7 +181,7 @@ def salvar_estado(
     except Exception as erro:
 
         print(
-            f"[AVISO] Erro salvando estado: {erro}"
+            f"[AVISO] Não foi possível salvar estado: {erro}"
         )
 
 
@@ -225,7 +221,7 @@ def carregar_fonte(
 
         except Exception:
 
-            pass
+            continue
 
     return ImageFont.load_default()
 
@@ -308,6 +304,7 @@ def limitar_texto(
     )
 
     if largura <= largura_maxima:
+
         return texto
 
     resultado = ""
@@ -327,6 +324,7 @@ def limitar_texto(
         )
 
         if largura_teste > largura_maxima:
+
             break
 
         resultado += caractere
@@ -335,13 +333,12 @@ def limitar_texto(
 
 
 # ============================================================
-# DOWNLOAD
+# DOWNLOAD DAS IMAGENS DOS ITENS
 # ============================================================
 
 async def baixar_imagem(
     session,
-    url,
-    limite
+    url
 ):
 
     if not url:
@@ -361,27 +358,31 @@ async def baixar_imagem(
             if resposta.status != 200:
 
                 print(
-                    f"[AVISO] HTTP {resposta.status}"
+                    f"[AVISO] Imagem retornou HTTP "
+                    f"{resposta.status}"
                 )
 
                 return None
 
             tamanho = resposta.content_length
 
-            if tamanho and tamanho > limite:
+            if (
+                tamanho
+                and tamanho > MAX_IMAGEM_DOWNLOAD
+            ):
 
                 print(
-                    "[AVISO] Imagem acima do limite."
+                    "[AVISO] Imagem muito grande."
                 )
 
                 return None
 
             dados = await resposta.read()
 
-            if len(dados) > limite:
+            if len(dados) > MAX_IMAGEM_DOWNLOAD:
 
                 print(
-                    "[AVISO] Download acima do limite."
+                    "[AVISO] Download ultrapassou o limite."
                 )
 
                 return None
@@ -395,96 +396,80 @@ async def baixar_imagem(
     except Exception as erro:
 
         print(
-            f"[AVISO] Erro no download: {erro}"
+            f"[AVISO] Erro baixando imagem: {erro}"
         )
 
         return None
 
 
 # ============================================================
-# BACKGROUND
+# IMAGEM DO ITEM
 # ============================================================
 
-async def carregar_fundo(
-    session
+async def processar_imagem_item(
+    session,
+    url
 ):
 
     dados = await baixar_imagem(
         session,
-        FUNDO_URL,
-        MAX_BACKGROUND_DOWNLOAD
+        url
     )
 
     if not dados:
+
         return None
 
-    original = None
-    fundo = None
+    imagem = None
+    resultado = None
 
     try:
 
-        original = Image.open(
+        imagem = Image.open(
             io.BytesIO(dados)
         )
 
-        original.load()
-
-        print(
-            f"[FUNDO] {original.width}x{original.height}"
+        # Reduz imediatamente.
+        imagem.thumbnail(
+            (
+                IMAGEM_LARGURA,
+                IMAGEM_ALTURA
+            ),
+            Image.Resampling.LANCZOS
         )
 
-        fundo = original.convert(
-            "RGB"
-        )
+        if "A" in imagem.getbands():
 
-        # Redimensiona diretamente para 1200 px.
-        if fundo.width != LARGURA_FINAL:
-
-            proporcao = (
-                LARGURA_FINAL
-                / fundo.width
+            resultado = imagem.convert(
+                "RGBA"
             )
 
-            nova_altura = int(
-                fundo.height
-                * proporcao
+        else:
+
+            resultado = imagem.convert(
+                "RGB"
             )
 
-            reduzido = fundo.resize(
-                (
-                    LARGURA_FINAL,
-                    nova_altura
-                ),
-                Image.Resampling.LANCZOS
-            )
-
-            fundo.close()
-
-            fundo = reduzido
-
-        return fundo
+        return resultado
 
     except Exception as erro:
 
         print(
-            f"[ERRO] Background: {erro}"
+            f"[AVISO] Erro processando item: {erro}"
         )
 
-        if fundo:
+        if resultado:
 
-            try:
-                fundo.close()
-            except Exception:
-                pass
+            resultado.close()
 
         return None
 
     finally:
 
-        if original:
+        if imagem:
 
             try:
-                original.close()
+                imagem.close()
             except Exception:
                 pass
 
@@ -494,79 +479,119 @@ async def carregar_fundo(
 
 
 # ============================================================
-# DADOS DA OFERTA
+# CRIA O FUNDO
 # ============================================================
 
-def obter_imagem_oferta(
-    entry
+def criar_fundo(
+    altura
 ):
 
-    items = entry.get("items")
+    altura = min(
+        altura,
+        ALTURA_MAXIMA
+    )
 
-    if isinstance(items, list):
+    imagem = Image.new(
+        "RGB",
+        (
+            LARGURA_FINAL,
+            altura
+        ),
+        COR_FUNDO
+    )
 
-        for item in items:
+    draw = ImageDraw.Draw(
+        imagem
+    )
 
-            if not isinstance(item, dict):
-                continue
+    # ========================================================
+    # FUNDO EM CAMADAS
+    # ========================================================
 
-            images = item.get("images")
+    # Faixa superior
+    draw.rectangle(
+        (
+            0,
+            0,
+            LARGURA_FINAL,
+            MARGEM_TOPO
+        ),
+        fill=COR_FUNDO_SECUNDARIO
+    )
 
-            if isinstance(images, dict):
+    # Linha de destaque
+    draw.rectangle(
+        (
+            0,
+            MARGEM_TOPO - 2,
+            LARGURA_FINAL,
+            MARGEM_TOPO
+        ),
+        fill=COR_DESTAQUE
+    )
 
-                imagem = (
-                    images.get("featured")
-                    or images.get("icon")
-                    or images.get("background")
-                )
+    # ========================================================
+    # DETALHES DISCRETOS
+    # ========================================================
 
-                if imagem:
-                    return imagem
+    for x in range(
+        0,
+        LARGURA_FINAL,
+        80
+    ):
 
-            imagem = item.get("image")
-
-            if imagem:
-                return imagem
-
-    granted = entry.get("granted")
-
-    if isinstance(granted, list):
-
-        for item in granted:
-
-            if not isinstance(item, dict):
-                continue
-
-            images = item.get("images")
-
-            if isinstance(images, dict):
-
-                imagem = (
-                    images.get("featured")
-                    or images.get("icon")
-                    or images.get("background")
-                )
-
-                if imagem:
-                    return imagem
-
-            imagem = item.get("image")
-
-            if imagem:
-                return imagem
-
-    images = entry.get("images")
-
-    if isinstance(images, dict):
-
-        return (
-            images.get("featured")
-            or images.get("icon")
-            or images.get("background")
+        draw.line(
+            (
+                x,
+                0,
+                x + 100,
+                MARGEM_TOPO
+            ),
+            fill=(18, 22, 36),
+            width=1
         )
 
-    return None
+    # ========================================================
+    # TÍTULO
+    # ========================================================
 
+    fonte_titulo = carregar_fonte(
+        30,
+        negrito=True
+    )
+
+    fonte_subtitulo = carregar_fonte(
+        13
+    )
+
+    texto_centralizado(
+        draw,
+        0,
+        18,
+        LARGURA_FINAL,
+        58,
+        "FORTNITE ITEM SHOP",
+        fonte_titulo,
+        COR_TITULO
+    )
+
+    texto_centralizado(
+        draw,
+        0,
+        60,
+        LARGURA_FINAL,
+        85,
+        "LOJA DE ITENS",
+        fonte_subtitulo,
+        COR_SUBTITULO
+    )
+
+    return imagem
+
+
+# ============================================================
+# DADOS DA OFERTA
+# ============================================================
 
 def obter_nome(
     entry
@@ -579,23 +604,32 @@ def obter_nome(
     )
 
     if nome:
+
         return str(nome)
 
-    items = entry.get("items")
+    items = entry.get(
+        "items"
+    )
 
     if isinstance(items, list):
 
         for item in items:
 
-            if isinstance(item, dict):
+            if not isinstance(
+                item,
+                dict
+            ):
 
-                nome_item = (
-                    item.get("name")
-                    or item.get("displayName")
-                )
+                continue
 
-                if nome_item:
-                    return str(nome_item)
+            nome = (
+                item.get("displayName")
+                or item.get("name")
+            )
+
+            if nome:
+
+                return str(nome)
 
     return "Item da Loja"
 
@@ -604,27 +638,23 @@ def obter_preco(
     entry
 ):
 
-    if entry.get("finalPrice") is not None:
-
-        preco = entry.get(
-            "finalPrice"
-        )
-
-    else:
-
-        preco = entry.get(
-            "price"
-        )
+    preco = (
+        entry.get("finalPrice")
+        if entry.get("finalPrice") is not None
+        else entry.get("price")
+    )
 
     if preco is None:
+
         return "Preço indisponível"
 
     try:
 
-        valor = int(preco)
-
         return (
-            f"{valor:,}".replace(",", ".")
+            f"{int(preco):,}".replace(
+                ",",
+                "."
+            )
             + " V-Bucks"
         )
 
@@ -637,18 +667,29 @@ def obter_tipo(
     entry
 ):
 
-    items = entry.get("items")
+    items = entry.get(
+        "items"
+    )
 
     if isinstance(items, list):
 
         for item in items:
 
-            if not isinstance(item, dict):
+            if not isinstance(
+                item,
+                dict
+            ):
+
                 continue
 
-            tipo = item.get("type")
+            tipo = item.get(
+                "type"
+            )
 
-            if isinstance(tipo, dict):
+            if isinstance(
+                tipo,
+                dict
+            ):
 
                 valor = (
                     tipo.get("displayValue")
@@ -656,16 +697,24 @@ def obter_tipo(
                 )
 
                 if valor:
+
                     return str(valor)
 
-            if isinstance(tipo, str):
+            if isinstance(
+                tipo,
+                str
+            ):
+
                 return tipo
 
             rarity = item.get(
                 "rarity"
             )
 
-            if isinstance(rarity, dict):
+            if isinstance(
+                rarity,
+                dict
+            ):
 
                 valor = (
                     rarity.get("displayValue")
@@ -673,16 +722,145 @@ def obter_tipo(
                 )
 
                 if valor:
+
                     return str(valor)
 
-            if isinstance(rarity, str):
+            if isinstance(
+                rarity,
+                str
+            ):
+
                 return rarity
 
     return "Loja"
 
 
+def obter_imagem_oferta(
+    entry
+):
+
+    # ========================================================
+    # TENTA ITEMS
+    # ========================================================
+
+    items = entry.get(
+        "items"
+    )
+
+    if isinstance(
+        items,
+        list
+    ):
+
+        for item in items:
+
+            if not isinstance(
+                item,
+                dict
+            ):
+
+                continue
+
+            images = item.get(
+                "images"
+            )
+
+            if isinstance(
+                images,
+                dict
+            ):
+
+                imagem = (
+                    images.get("featured")
+                    or images.get("icon")
+                    or images.get("background")
+                )
+
+                if imagem:
+
+                    return imagem
+
+            imagem = item.get(
+                "image"
+            )
+
+            if imagem:
+
+                return imagem
+
+    # ========================================================
+    # GRANTED
+    # ========================================================
+
+    granted = entry.get(
+        "granted"
+    )
+
+    if isinstance(
+        granted,
+        list
+    ):
+
+        for item in granted:
+
+            if not isinstance(
+                item,
+                dict
+            ):
+
+                continue
+
+            images = item.get(
+                "images"
+            )
+
+            if isinstance(
+                images,
+                dict
+            ):
+
+                imagem = (
+                    images.get("featured")
+                    or images.get("icon")
+                    or images.get("background")
+                )
+
+                if imagem:
+
+                    return imagem
+
+            imagem = item.get(
+                "image"
+            )
+
+            if imagem:
+
+                return imagem
+
+    # ========================================================
+    # IMAGES DIRETO
+    # ========================================================
+
+    images = entry.get(
+        "images"
+    )
+
+    if isinstance(
+        images,
+        dict
+    ):
+
+        return (
+            images.get("featured")
+            or images.get("icon")
+            or images.get("background")
+        )
+
+    return None
+
+
 # ============================================================
-# EXTRAI OFERTAS
+# EXTRAIR OFERTAS
 # ============================================================
 
 def extrair_ofertas(
@@ -693,7 +871,10 @@ def extrair_ofertas(
         "entries"
     )
 
-    if not isinstance(entries, list):
+    if not isinstance(
+        entries,
+        list
+    ):
 
         print(
             "[ERRO] API não retornou entries."
@@ -705,15 +886,27 @@ def extrair_ofertas(
 
     for entry in entries:
 
-        if not isinstance(entry, dict):
+        if not isinstance(
+            entry,
+            dict
+        ):
+
             continue
 
         ofertas.append(
             {
-                "nome": obter_nome(entry),
-                "preco": obter_preco(entry),
-                "tipo": obter_tipo(entry),
-                "imagem": obter_imagem_oferta(entry)
+                "nome": obter_nome(
+                    entry
+                ),
+                "preco": obter_preco(
+                    entry
+                ),
+                "tipo": obter_tipo(
+                    entry
+                ),
+                "imagem": obter_imagem_oferta(
+                    entry
+                )
             }
         )
 
@@ -734,20 +927,18 @@ async def consultar_loja(
             total=20
         )
 
-        parametros = {
-            "language": IDIOMA
-        }
-
         async with session.get(
             FORTNITE_SHOP_URL,
-            params=parametros,
+            params={
+                "language": IDIOMA
+            },
             timeout=timeout
         ) as resposta:
 
             if resposta.status != 200:
 
                 print(
-                    f"[ERRO] Fortnite API HTTP "
+                    f"[ERRO] API HTTP "
                     f"{resposta.status}"
                 )
 
@@ -755,14 +946,22 @@ async def consultar_loja(
 
             resultado = await resposta.json()
 
-            if not isinstance(resultado, dict):
+            if not isinstance(
+                resultado,
+                dict
+            ):
+
                 return None
 
             loja = resultado.get(
                 "data"
             )
 
-            if not isinstance(loja, dict):
+            if not isinstance(
+                loja,
+                dict
+            ):
+
                 return None
 
             return loja
@@ -774,191 +973,10 @@ async def consultar_loja(
     except Exception as erro:
 
         print(
-            f"[ERRO] API: {erro}"
+            f"[ERRO] API Fortnite: {erro}"
         )
 
         return None
-
-
-# ============================================================
-# PROCESSAR ITEM
-# ============================================================
-
-async def processar_imagem_item(
-    session,
-    url
-):
-
-    if not url:
-        return None
-
-    dados = await baixar_imagem(
-        session,
-        url,
-        MAX_IMAGEM_DOWNLOAD
-    )
-
-    if not dados:
-        return None
-
-    original = None
-    resultado = None
-
-    try:
-
-        original = Image.open(
-            io.BytesIO(dados)
-        )
-
-        largura = original.width
-        altura = original.height
-
-        if largura <= 0 or altura <= 0:
-            return None
-
-        # Reduz a imagem imediatamente.
-        original.thumbnail(
-            (
-                IMAGEM_LARGURA,
-                IMAGEM_ALTURA
-            ),
-            Image.Resampling.LANCZOS
-        )
-
-        # Só depois da redução fazemos a conversão.
-        if "A" in original.getbands():
-
-            resultado = original.convert(
-                "RGBA"
-            )
-
-        else:
-
-            resultado = original.convert(
-                "RGB"
-            )
-
-        return resultado
-
-    except Exception as erro:
-
-        print(
-            f"[AVISO] Erro imagem: {erro}"
-        )
-
-        if resultado:
-
-            try:
-                resultado.close()
-            except Exception:
-                pass
-
-        return None
-
-    finally:
-
-        if original:
-
-            try:
-                original.close()
-            except Exception:
-                pass
-
-        dados = None
-
-        gc.collect()
-
-
-# ============================================================
-# PREPARAR CANVAS
-# ============================================================
-
-def preparar_canvas(
-    fundo,
-    altura
-):
-
-    if altura <= fundo.height:
-
-        return fundo
-
-    # Nunca deixa a imagem ficar
-    # absurdamente alta.
-    altura = min(
-        altura,
-        ALTURA_MAXIMA
-    )
-
-    canvas = Image.new(
-        "RGB",
-        (
-            LARGURA_FINAL,
-            altura
-        ),
-        (18, 18, 23)
-    )
-
-    canvas.paste(
-        fundo,
-        (0, 0)
-    )
-
-    # Pequena faixa do rodapé.
-    faixa_altura = min(
-        160,
-        fundo.height
-    )
-
-    inicio = (
-        fundo.height
-        - faixa_altura
-    )
-
-    faixa = fundo.crop(
-        (
-            0,
-            inicio,
-            fundo.width,
-            fundo.height
-        )
-    )
-
-    y = fundo.height
-
-    while y < altura:
-
-        restante = min(
-            faixa.height,
-            altura - y
-        )
-
-        parte = faixa.crop(
-            (
-                0,
-                0,
-                faixa.width,
-                restante
-            )
-        )
-
-        canvas.paste(
-            parte,
-            (
-                0,
-                y
-            )
-        )
-
-        parte.close()
-
-        y += restante
-
-    faixa.close()
-    fundo.close()
-
-    gc.collect()
-
-    return canvas
 
 
 # ============================================================
@@ -972,79 +990,47 @@ async def gerar_imagem_loja(
 
     if not ofertas:
 
-        print(
-            "[ERRO] Nenhuma oferta."
-        )
-
         return None
 
-    # ========================================================
-    # LIMITA A QUANTIDADE DE ITENS
-    # ========================================================
-    #
-    # Evita que uma resposta anormal da API
-    # crie uma imagem gigantesca.
-    #
-    MAX_OFERTAS = 80
+    # Segurança contra respostas gigantes.
+    ofertas = ofertas[
+        :MAX_OFERTAS
+    ]
 
-    if len(ofertas) > MAX_OFERTAS:
-
-        print(
-            f"[AVISO] API retornou {len(ofertas)} itens."
-        )
-
-        print(
-            f"[AVISO] Limitando para {MAX_OFERTAS}."
-        )
-
-        ofertas = ofertas[:MAX_OFERTAS]
-
-    fundo = await carregar_fundo(
-        session
-    )
-
-    if fundo is None:
-        return None
-
-    quantidade_linhas = (
+    linhas = (
         len(ofertas)
         + COLUNAS
         - 1
     ) // COLUNAS
 
-    altura_grid = (
+    altura = (
         MARGEM_TOPO
         + (
-            quantidade_linhas
+            linhas
             * CARD_ALTURA
         )
         + (
             max(
                 0,
-                quantidade_linhas - 1
+                linhas - 1
             )
             * ESPACO_VERTICAL
         )
         + 30
     )
 
-    altura_final = max(
-        fundo.height,
-        altura_grid
-    )
-
-    altura_final = min(
-        altura_final,
+    altura = min(
+        altura,
         ALTURA_MAXIMA
     )
 
     print(
-        f"[IMAGEM] {LARGURA_FINAL}x{altura_final}"
+        f"[IMAGEM] Criando "
+        f"{LARGURA_FINAL}x{altura}"
     )
 
-    canvas = preparar_canvas(
-        fundo,
-        altura_final
+    canvas = criar_fundo(
+        altura
     )
 
     draw = ImageDraw.Draw(
@@ -1052,21 +1038,21 @@ async def gerar_imagem_loja(
     )
 
     fonte_nome = carregar_fonte(
-        15,
-        negrito=True
-    )
-
-    fonte_preco = carregar_fonte(
         14,
         negrito=True
     )
 
+    fonte_preco = carregar_fonte(
+        13,
+        negrito=True
+    )
+
     fonte_tipo = carregar_fonte(
-        11
+        10
     )
 
     # ========================================================
-    # ITENS
+    # CARDS
     # ========================================================
 
     for indice, oferta in enumerate(
@@ -1074,11 +1060,13 @@ async def gerar_imagem_loja(
     ):
 
         coluna = (
-            indice % COLUNAS
+            indice
+            % COLUNAS
         )
 
         linha = (
-            indice // COLUNAS
+            indice
+            // COLUNAS
         )
 
         x = (
@@ -1110,9 +1098,9 @@ async def gerar_imagem_loja(
                 x + CARD_LARGURA,
                 y + CARD_ALTURA
             ),
-            radius=14,
-            fill=(18, 18, 24),
-            outline=(255, 255, 255),
+            radius=12,
+            fill=COR_CARD,
+            outline=COR_CARD_BORDA,
             width=1
         )
 
@@ -1122,11 +1110,13 @@ async def gerar_imagem_loja(
 
         area_x1 = x + 12
         area_y1 = y + 10
+
         area_x2 = (
             x
             + CARD_LARGURA
             - 12
         )
+
         area_y2 = (
             y
             + 10
@@ -1140,8 +1130,8 @@ async def gerar_imagem_loja(
                 area_x2,
                 area_y2
             ),
-            radius=10,
-            fill=(30, 30, 38)
+            radius=9,
+            fill=COR_AREA_IMAGEM
         )
 
         # ====================================================
@@ -1154,7 +1144,9 @@ async def gerar_imagem_loja(
 
             imagem = await processar_imagem_item(
                 session,
-                oferta.get("imagem")
+                oferta.get(
+                    "imagem"
+                )
             )
 
             if imagem:
@@ -1202,8 +1194,8 @@ async def gerar_imagem_loja(
         except Exception as erro:
 
             print(
-                f"[AVISO] Item {indice + 1}: "
-                f"{erro}"
+                f"[AVISO] Erro no item "
+                f"{indice + 1}: {erro}"
             )
 
         finally:
@@ -1236,12 +1228,12 @@ async def gerar_imagem_loja(
         texto_centralizado(
             draw,
             x + 8,
-            y + 147,
+            y + 143,
             x + CARD_LARGURA - 8,
-            y + 169,
+            y + 164,
             nome,
             fonte_nome,
-            (255, 255, 255)
+            COR_TITULO
         )
 
         # ====================================================
@@ -1256,12 +1248,12 @@ async def gerar_imagem_loja(
         texto_centralizado(
             draw,
             x + 8,
-            y + 168,
+            y + 164,
             x + CARD_LARGURA - 8,
-            y + 188,
+            y + 184,
             preco,
             fonte_preco,
-            (255, 220, 70)
+            COR_PRECO
         )
 
         # ====================================================
@@ -1281,18 +1273,18 @@ async def gerar_imagem_loja(
         texto_centralizado(
             draw,
             x + 8,
-            y + 188,
+            y + 184,
             x + CARD_LARGURA - 8,
-            y + 202,
+            y + 200,
             tipo,
             fonte_tipo,
-            (190, 190, 200)
+            COR_TIPO
         )
 
         await asyncio.sleep(0)
 
     # ========================================================
-    # JPEG
+    # EXPORTAR
     # ========================================================
 
     buffer = io.BytesIO()
@@ -1303,21 +1295,21 @@ async def gerar_imagem_loja(
             buffer,
             format="JPEG",
             quality=QUALIDADE_JPEG,
-            optimize=True,
-            progressive=True
+            optimize=False,
+            progressive=False
         )
 
         buffer.seek(0)
 
-        tamanho_mb = (
+        tamanho = (
             len(buffer.getbuffer())
             / 1024
             / 1024
         )
 
         print(
-            f"[IMAGEM] JPEG final: "
-            f"{tamanho_mb:.2f} MB"
+            f"[IMAGEM] Tamanho final: "
+            f"{tamanho:.2f} MB"
         )
 
         return buffer
@@ -1325,7 +1317,7 @@ async def gerar_imagem_loja(
     except Exception as erro:
 
         print(
-            f"[ERRO] JPEG: {erro}"
+            f"[ERRO] Salvando JPEG: {erro}"
         )
 
         buffer.close()
@@ -1340,7 +1332,7 @@ async def gerar_imagem_loja(
 
 
 # ============================================================
-# BUSCAR MENSAGEM
+# BUSCAR MENSAGEM EXISTENTE
 # ============================================================
 
 async def buscar_mensagem(
@@ -1349,6 +1341,7 @@ async def buscar_mensagem(
 ):
 
     if not message_id:
+
         return None
 
     try:
@@ -1360,7 +1353,7 @@ async def buscar_mensagem(
     except discord.NotFound:
 
         print(
-            "[AVISO] Mensagem antiga não encontrada."
+            "[AVISO] Mensagem anterior não existe."
         )
 
         return None
@@ -1368,14 +1361,14 @@ async def buscar_mensagem(
     except discord.HTTPException as erro:
 
         print(
-            f"[AVISO] Erro Discord: {erro}"
+            f"[AVISO] Erro buscando mensagem: {erro}"
         )
 
         return None
 
 
 # ============================================================
-# PUBLICAR LOJA
+# PUBLICAR
 # ============================================================
 
 async def publicar_loja(
@@ -1390,10 +1383,6 @@ async def publicar_loja(
         "message_id"
     )
 
-    print(
-        "[IMAGEM] Gerando loja..."
-    )
-
     imagem = await gerar_imagem_loja(
         bot.http_session,
         ofertas
@@ -1402,10 +1391,12 @@ async def publicar_loja(
     if imagem is None:
 
         print(
-            "[ERRO] Imagem não gerada."
+            "[ERRO] Não foi possível gerar a imagem."
         )
 
         return False
+
+    arquivo = None
 
     try:
 
@@ -1414,20 +1405,15 @@ async def publicar_loja(
             filename="fortnite-shop.jpg"
         )
 
-        data = time.strftime(
-            "%d/%m/%Y"
-        )
-
-        hora = time.strftime(
-            "%H:%M"
+        agora = time.strftime(
+            "%d/%m/%Y às %H:%M"
         )
 
         embed = discord.Embed(
             title="🛒 LOJA FORTNITE",
             description=(
-                f"**Loja atualizada em "
-                f"{data} às {hora}**\n\n"
-                f"🎮 {len(ofertas)} ofertas disponíveis"
+                f"**Loja atualizada:** {agora}\n"
+                f"🎮 **{len(ofertas)} itens disponíveis**"
             ),
             color=discord.Color.blurple()
         )
@@ -1437,7 +1423,7 @@ async def publicar_loja(
         )
 
         embed.set_footer(
-            text="Atualização automática • VoidHelper"
+            text="VoidHelper • Atualização automática"
         )
 
         mensagem = await buscar_mensagem(
@@ -1448,15 +1434,16 @@ async def publicar_loja(
         if mensagem:
 
             await mensagem.edit(
-                content=None,
                 embed=embed,
-                attachments=[arquivo]
+                attachments=[
+                    arquivo
+                ]
             )
 
-            message_id = mensagem.id
+            novo_id = mensagem.id
 
             print(
-                "[OK] Mensagem editada."
+                "[LOJA] Mensagem atualizada."
             )
 
         else:
@@ -1466,15 +1453,15 @@ async def publicar_loja(
                 file=arquivo
             )
 
-            message_id = mensagem.id
+            novo_id = mensagem.id
 
             print(
-                "[OK] Mensagem criada."
+                "[LOJA] Nova mensagem criada."
             )
 
         salvar_estado(
             shop_hash,
-            message_id
+            novo_id
         )
 
         return True
@@ -1496,6 +1483,13 @@ async def publicar_loja(
         return False
 
     finally:
+
+        if arquivo:
+
+            try:
+                arquivo.close()
+            except Exception:
+                pass
 
         try:
             imagem.close()
@@ -1530,6 +1524,7 @@ async def verificar_loja(
     )
 
     if loja is None:
+
         return
 
     shop_hash = (
@@ -1540,7 +1535,7 @@ async def verificar_loja(
     if not shop_hash:
 
         print(
-            "[ERRO] Hash não encontrado."
+            "[ERRO] Hash da loja não encontrado."
         )
 
         return
@@ -1552,11 +1547,11 @@ async def verificar_loja(
     )
 
     print(
-        f"[LOJA] Hash: {shop_hash}"
+        f"[LOJA] Hash atual: {shop_hash}"
     )
 
     # ========================================================
-    # MESMA LOJA
+    # LOJA NÃO MUDOU
     # ========================================================
 
     if (
@@ -1565,19 +1560,19 @@ async def verificar_loja(
     ):
 
         print(
-            "[LOJA] Sem alterações."
+            "[LOJA] Nenhuma alteração."
         )
 
         return
 
     # ========================================================
-    # ALTERAÇÃO
+    # LOJA MUDOU
     # ========================================================
 
     if hash_anterior is None:
 
         print(
-            "[LOJA] Primeira execução."
+            "[LOJA] Primeira publicação."
         )
 
     else:
@@ -1587,15 +1582,15 @@ async def verificar_loja(
         )
 
         print(
-            "[LOJA] NOVA LOJA!"
+            "[LOJA] 🔄 NOVA LOJA DETECTADA"
         )
 
         print(
-            f"[LOJA] Antigo: {hash_anterior}"
+            f"[LOJA] Hash antigo: {hash_anterior}"
         )
 
         print(
-            f"[LOJA] Novo:   {shop_hash}"
+            f"[LOJA] Hash novo:   {shop_hash}"
         )
 
         print(
@@ -1607,13 +1602,13 @@ async def verificar_loja(
     )
 
     print(
-        f"[LOJA] Ofertas: {len(ofertas)}"
+        f"[LOJA] Total de ofertas: {len(ofertas)}"
     )
 
     if not ofertas:
 
         print(
-            "[ERRO] Nenhuma oferta."
+            "[ERRO] Nenhuma oferta encontrada."
         )
 
         return
@@ -1627,12 +1622,12 @@ async def verificar_loja(
     if sucesso:
 
         print(
-            "[LOJA] Atualização concluída."
+            "[LOJA] ✅ Loja publicada com sucesso."
         )
 
 
 # ============================================================
-# LOOP AUTOMÁTICO
+# LOOP
 # ============================================================
 
 @tasks.loop(
@@ -1641,7 +1636,7 @@ async def verificar_loja(
 async def verificar_loja_loop():
 
     print(
-        "[LOJA] Consultando Fortnite API..."
+        "[LOJA] 🔎 Verificando loja..."
     )
 
     await verificar_loja()
@@ -1656,14 +1651,9 @@ async def iniciar_monitoramento():
         "[LOJA] Monitoramento iniciado."
     )
 
-    # IMPORTANTE:
-    # Não gera a imagem imediatamente no startup.
-    #
-    # O primeiro ciclo será executado pelo loop
-    # após o bot estar completamente estabilizado.
     print(
-        "[LOJA] Primeira consulta será feita "
-        "pelo ciclo automático."
+        "[LOJA] Verificação automática a cada "
+        f"{INTERVALO_VERIFICACAO // 60} minutos."
     )
 
 
@@ -1679,7 +1669,7 @@ async def on_ready():
     )
 
     print(
-        f"[BOT] Online como: {bot.user}"
+        f"[BOT] Online: {bot.user}"
     )
 
     print(
@@ -1687,7 +1677,7 @@ async def on_ready():
     )
 
     print(
-        "[BOT] Memória otimizada para Deploy Hatch."
+        "[BOT] VoidHelper iniciado."
     )
 
     print(
@@ -1700,18 +1690,18 @@ async def on_ready():
 
 
 # ============================================================
-# SISTEMA ORIGINAL DE REAÇÕES
+# REAÇÕES
 # ============================================================
 
 @bot.event
 async def on_message(message):
 
-    # Ignora bots
     if message.author.bot:
+
         return
 
     # ========================================================
-    # SISTEMA ORIGINAL
+    # SISTEMA ORIGINAL — NÃO ALTERADO
     # ========================================================
 
     if message.channel.id == CANAL_REACOES_ID:
@@ -1746,7 +1736,7 @@ async def on_message(message):
 
 
 # ============================================================
-# COMANDO !TESTELOJA
+# !TESTELOJA
 # ============================================================
 
 @bot.command(
@@ -1758,7 +1748,7 @@ async def on_message(message):
 async def teste_loja(ctx):
 
     await ctx.send(
-        "🔄 Atualizando a imagem da loja atual..."
+        "🔄 Gerando a loja atual..."
     )
 
     await verificar_loja(
@@ -1809,11 +1799,7 @@ async def iniciar():
         )
 
         print(
-            "[ERRO] DISCORD_TOKEN não configurado!"
-        )
-
-        print(
-            "Configure DISCORD_TOKEN no Deploy Hatch."
+            "[ERRO] DISCORD_TOKEN não configurado."
         )
 
         print(
@@ -1824,10 +1810,8 @@ async def iniciar():
 
     bot.http_session = aiohttp.ClientSession(
         headers={
-            "User-Agent": (
-                "VoidHelper/1.0 "
-                "Discord Fortnite Shop Bot"
-            )
+            "User-Agent":
+                "VoidHelper/1.0"
         }
     )
 
@@ -1864,7 +1848,7 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
 
         print(
-            "[BOT] Bot encerrado."
+            "[BOT] Encerrado."
         )
 
     except Exception as erro:
