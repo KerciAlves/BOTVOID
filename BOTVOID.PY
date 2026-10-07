@@ -24,13 +24,13 @@ CANAL_REACOES_ID = 1556998399461691443
 # Canal da loja Fortnite
 CANAL_LOJA_ID = 1214658145243234324
 
-# API da loja Fortnite
+# API Fortnite
 FORTNITE_SHOP_URL = "https://fortnite-api.com/v2/shop"
 
 # Idioma
 IDIOMA = "pt-BR"
 
-# Verifica a API a cada 5 minutos
+# Verificação a cada 5 minutos
 INTERVALO_VERIFICACAO = 300
 
 
@@ -47,50 +47,52 @@ FUNDO_URL = (
     "&=&format=webp&quality=lossless&width=1536&height=1027"
 )
 
-LARGURA_FINAL = 1536
-
 
 # ============================================================
-# LAYOUT
+# IMAGEM FINAL
 # ============================================================
+
+# Reduzido de 1536 para diminuir bastante o consumo de RAM.
+LARGURA_FINAL = 1200
 
 COLUNAS = 4
 
-MARGEM_LATERAL = 45
-MARGEM_TOPO = 245
+MARGEM_LATERAL = 30
+MARGEM_TOPO = 190
 
-ESPACO_HORIZONTAL = 18
-ESPACO_VERTICAL = 20
+ESPACO_HORIZONTAL = 12
+ESPACO_VERTICAL = 14
 
-CARD_LARGURA = 345
-CARD_ALTURA = 250
+CARD_LARGURA = 277
+CARD_ALTURA = 205
 
-IMAGEM_LARGURA = 315
-IMAGEM_ALTURA = 175
+IMAGEM_LARGURA = 250
+IMAGEM_ALTURA = 135
 
 
 # ============================================================
-# MEMÓRIA / IMAGENS
+# CONTROLE DE MEMÓRIA
 # ============================================================
 
-# Limite de download de uma imagem individual
-MAX_IMAGEM_DOWNLOAD = 2 * 1024 * 1024
+# Limite de download de cada imagem.
+MAX_IMAGEM_DOWNLOAD = 1 * 1024 * 1024
 
-# Limite do background
-MAX_BACKGROUND_DOWNLOAD = 6 * 1024 * 1024
+# Limite do background.
+MAX_BACKGROUND_DOWNLOAD = 4 * 1024 * 1024
 
-# Evita imagens absurdamente grandes
-MAX_PIXELS_IMAGEM = 4_000_000
+# Máximo de pixels para uma imagem de item.
+MAX_PIXELS_IMAGEM = 2_000_000
 
-# JPEG final
-QUALIDADE_JPEG = 68
+# Qualidade final.
+QUALIDADE_JPEG = 60
+
+# Altura máxima absoluta da imagem.
+# Evita que uma loja excepcionalmente grande consuma RAM.
+ALTURA_MAXIMA = 5000
 
 
-# Permite que Pillow continue trabalhando com imagens
-# parcialmente carregadas.
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
-# Proteção contra imagens com milhões de pixels.
 Image.MAX_IMAGE_PIXELS = MAX_PIXELS_IMAGEM
 
 
@@ -116,7 +118,7 @@ bot = commands.Bot(
 
 
 # ============================================================
-# ESTADO DA LOJA
+# ESTADO
 # ============================================================
 
 def carregar_estado():
@@ -223,7 +225,7 @@ def carregar_fonte(
 
         except Exception:
 
-            continue
+            pass
 
     return ImageFont.load_default()
 
@@ -273,8 +275,13 @@ def texto_centralizado(
         fonte
     )
 
-    x = x1 + ((x2 - x1 - largura) / 2)
-    y = y1 + ((y2 - y1 - altura) / 2)
+    x = x1 + (
+        (x2 - x1 - largura) / 2
+    )
+
+    y = y1 + (
+        (y2 - y1 - altura) / 2
+    )
 
     draw.text(
         (x, y),
@@ -328,13 +335,13 @@ def limitar_texto(
 
 
 # ============================================================
-# DOWNLOAD SEGURO
+# DOWNLOAD
 # ============================================================
 
 async def baixar_imagem(
     session,
     url,
-    limite=MAX_IMAGEM_DOWNLOAD
+    limite
 ):
 
     if not url:
@@ -343,7 +350,7 @@ async def baixar_imagem(
     try:
 
         timeout = aiohttp.ClientTimeout(
-            total=15
+            total=12
         )
 
         async with session.get(
@@ -364,7 +371,7 @@ async def baixar_imagem(
             if tamanho and tamanho > limite:
 
                 print(
-                    "[AVISO] Imagem maior que o limite."
+                    "[AVISO] Imagem acima do limite."
                 )
 
                 return None
@@ -374,7 +381,7 @@ async def baixar_imagem(
             if len(dados) > limite:
 
                 print(
-                    "[AVISO] Download excedeu o limite."
+                    "[AVISO] Download acima do limite."
                 )
 
                 return None
@@ -388,14 +395,14 @@ async def baixar_imagem(
     except Exception as erro:
 
         print(
-            f"[AVISO] Erro baixando imagem: {erro}"
+            f"[AVISO] Erro no download: {erro}"
         )
 
         return None
 
 
 # ============================================================
-# CARREGAR BACKGROUND
+# BACKGROUND
 # ============================================================
 
 async def carregar_fundo(
@@ -405,36 +412,32 @@ async def carregar_fundo(
     dados = await baixar_imagem(
         session,
         FUNDO_URL,
-        limite=MAX_BACKGROUND_DOWNLOAD
+        MAX_BACKGROUND_DOWNLOAD
     )
 
     if not dados:
         return None
 
-    imagem_original = None
+    original = None
     fundo = None
 
     try:
 
-        imagem_original = Image.open(
+        original = Image.open(
             io.BytesIO(dados)
         )
 
-        largura = imagem_original.width
-        altura = imagem_original.height
+        original.load()
 
         print(
-            f"[FUNDO] Original: {largura}x{altura}"
+            f"[FUNDO] {original.width}x{original.height}"
         )
 
-        # Carrega somente em RGB.
-        # Evita RGBA e reduz bastante o consumo.
-        imagem_original.load()
-
-        fundo = imagem_original.convert(
+        fundo = original.convert(
             "RGB"
         )
 
+        # Redimensiona diretamente para 1200 px.
         if fundo.width != LARGURA_FINAL:
 
             proporcao = (
@@ -443,10 +446,11 @@ async def carregar_fundo(
             )
 
             nova_altura = int(
-                fundo.height * proporcao
+                fundo.height
+                * proporcao
             )
 
-            novo_fundo = fundo.resize(
+            reduzido = fundo.resize(
                 (
                     LARGURA_FINAL,
                     nova_altura
@@ -456,7 +460,7 @@ async def carregar_fundo(
 
             fundo.close()
 
-            fundo = novo_fundo
+            fundo = reduzido
 
         return fundo
 
@@ -477,10 +481,10 @@ async def carregar_fundo(
 
     finally:
 
-        if imagem_original:
+        if original:
 
             try:
-                imagem_original.close()
+                original.close()
             except Exception:
                 pass
 
@@ -490,7 +494,7 @@ async def carregar_fundo(
 
 
 # ============================================================
-# IMAGEM DA OFERTA
+# DADOS DA OFERTA
 # ============================================================
 
 def obter_imagem_oferta(
@@ -564,10 +568,6 @@ def obter_imagem_oferta(
     return None
 
 
-# ============================================================
-# NOME
-# ============================================================
-
 def obter_nome(
     entry
 ):
@@ -599,10 +599,6 @@ def obter_nome(
 
     return "Item da Loja"
 
-
-# ============================================================
-# PREÇO
-# ============================================================
 
 def obter_preco(
     entry
@@ -636,10 +632,6 @@ def obter_preco(
 
         return f"{preco} V-Bucks"
 
-
-# ============================================================
-# TIPO
-# ============================================================
 
 def obter_tipo(
     entry
@@ -690,7 +682,7 @@ def obter_tipo(
 
 
 # ============================================================
-# OFERTAS
+# EXTRAI OFERTAS
 # ============================================================
 
 def extrair_ofertas(
@@ -729,7 +721,7 @@ def extrair_ofertas(
 
 
 # ============================================================
-# FORTNITE API
+# CONSULTAR API
 # ============================================================
 
 async def consultar_loja(
@@ -782,14 +774,14 @@ async def consultar_loja(
     except Exception as erro:
 
         print(
-            f"[ERRO] API Fortnite: {erro}"
+            f"[ERRO] API: {erro}"
         )
 
         return None
 
 
 # ============================================================
-# PROCESSA UMA IMAGEM DE ITEM
+# PROCESSAR ITEM
 # ============================================================
 
 async def processar_imagem_item(
@@ -803,80 +795,61 @@ async def processar_imagem_item(
     dados = await baixar_imagem(
         session,
         url,
-        limite=MAX_IMAGEM_DOWNLOAD
+        MAX_IMAGEM_DOWNLOAD
     )
 
     if not dados:
         return None
 
-    imagem_original = None
-    imagem_final = None
+    original = None
+    resultado = None
 
     try:
 
-        # Abre sem carregar imediatamente.
-        imagem_original = Image.open(
+        original = Image.open(
             io.BytesIO(dados)
         )
 
-        largura = imagem_original.width
-        altura = imagem_original.height
+        largura = original.width
+        altura = original.height
 
-        # Evita imagens absurdamente grandes.
-        if (
-            largura * altura
-            > MAX_PIXELS_IMAGEM
-        ):
+        if largura <= 0 or altura <= 0:
+            return None
 
-            print(
-                f"[IMAGEM] Muito grande: "
-                f"{largura}x{altura}"
-            )
+        # Reduz a imagem imediatamente.
+        original.thumbnail(
+            (
+                IMAGEM_LARGURA,
+                IMAGEM_ALTURA
+            ),
+            Image.Resampling.LANCZOS
+        )
 
-            # Reduz antes do load quando possível.
-            imagem_original.thumbnail(
-                (
-                    IMAGEM_LARGURA,
-                    IMAGEM_ALTURA
-                ),
-                Image.Resampling.LANCZOS
-            )
+        # Só depois da redução fazemos a conversão.
+        if "A" in original.getbands():
 
-        else:
-
-            imagem_original.thumbnail(
-                (
-                    IMAGEM_LARGURA,
-                    IMAGEM_ALTURA
-                ),
-                Image.Resampling.LANCZOS
-            )
-
-        # RGB/RGBA somente no tamanho pequeno.
-        if "A" in imagem_original.getbands():
-
-            imagem_final = imagem_original.convert(
+            resultado = original.convert(
                 "RGBA"
             )
 
         else:
 
-            imagem_final = imagem_original.convert(
+            resultado = original.convert(
                 "RGB"
             )
 
-        return imagem_final
+        return resultado
 
     except Exception as erro:
 
         print(
-            f"[AVISO] Erro processando item: {erro}"
+            f"[AVISO] Erro imagem: {erro}"
         )
 
-        if imagem_final:
+        if resultado:
 
             try:
-                imagem_final.close()
+                resultado.close()
             except Exception:
                 pass
 
@@ -884,10 +857,10 @@ async def processar_imagem_item(
 
     finally:
 
-        if imagem_original:
+        if original:
 
             try:
-                imagem_original.close()
+                original.close()
             except Exception:
                 pass
 
@@ -897,23 +870,30 @@ async def processar_imagem_item(
 
 
 # ============================================================
-# ESTENDE BACKGROUND
+# PREPARAR CANVAS
 # ============================================================
 
 def preparar_canvas(
     fundo,
-    altura_final
+    altura
 ):
 
-    if altura_final <= fundo.height:
+    if altura <= fundo.height:
 
         return fundo
+
+    # Nunca deixa a imagem ficar
+    # absurdamente alta.
+    altura = min(
+        altura,
+        ALTURA_MAXIMA
+    )
 
     canvas = Image.new(
         "RGB",
         (
             LARGURA_FINAL,
-            altura_final
+            altura
         ),
         (18, 18, 23)
     )
@@ -923,13 +903,15 @@ def preparar_canvas(
         (0, 0)
     )
 
-    # Copia somente uma faixa pequena
-    # do final do background.
-    faixa_altura = 180
+    # Pequena faixa do rodapé.
+    faixa_altura = min(
+        160,
+        fundo.height
+    )
 
-    inicio = max(
-        0,
-        fundo.height - faixa_altura
+    inicio = (
+        fundo.height
+        - faixa_altura
     )
 
     faixa = fundo.crop(
@@ -941,15 +923,13 @@ def preparar_canvas(
         )
     )
 
-    # Não precisamos redimensionar.
-    # O background já possui a largura correta.
-    posicao_y = fundo.height
+    y = fundo.height
 
-    while posicao_y < altura_final:
+    while y < altura:
 
         restante = min(
             faixa.height,
-            altura_final - posicao_y
+            altura - y
         )
 
         parte = faixa.crop(
@@ -965,13 +945,13 @@ def preparar_canvas(
             parte,
             (
                 0,
-                posicao_y
+                y
             )
         )
 
         parte.close()
 
-        posicao_y += restante
+        y += restante
 
     faixa.close()
     fundo.close()
@@ -982,7 +962,7 @@ def preparar_canvas(
 
 
 # ============================================================
-# GERA IMAGEM DA LOJA
+# GERAR IMAGEM
 # ============================================================
 
 async def gerar_imagem_loja(
@@ -998,16 +978,32 @@ async def gerar_imagem_loja(
 
         return None
 
+    # ========================================================
+    # LIMITA A QUANTIDADE DE ITENS
+    # ========================================================
+    #
+    # Evita que uma resposta anormal da API
+    # crie uma imagem gigantesca.
+    #
+    MAX_OFERTAS = 80
+
+    if len(ofertas) > MAX_OFERTAS:
+
+        print(
+            f"[AVISO] API retornou {len(ofertas)} itens."
+        )
+
+        print(
+            f"[AVISO] Limitando para {MAX_OFERTAS}."
+        )
+
+        ofertas = ofertas[:MAX_OFERTAS]
+
     fundo = await carregar_fundo(
         session
     )
 
     if fundo is None:
-
-        print(
-            "[ERRO] Não foi possível carregar fundo."
-        )
-
         return None
 
     quantidade_linhas = (
@@ -1029,7 +1025,7 @@ async def gerar_imagem_loja(
             )
             * ESPACO_VERTICAL
         )
-        + 50
+        + 30
     )
 
     altura_final = max(
@@ -1037,13 +1033,13 @@ async def gerar_imagem_loja(
         altura_grid
     )
 
-    print(
-        f"[IMAGEM] Ofertas: {len(ofertas)}"
+    altura_final = min(
+        altura_final,
+        ALTURA_MAXIMA
     )
 
     print(
-        f"[IMAGEM] Altura final: "
-        f"{altura_final}px"
+        f"[IMAGEM] {LARGURA_FINAL}x{altura_final}"
     )
 
     canvas = preparar_canvas(
@@ -1056,28 +1052,34 @@ async def gerar_imagem_loja(
     )
 
     fonte_nome = carregar_fonte(
-        19,
+        15,
         negrito=True
     )
 
     fonte_preco = carregar_fonte(
-        17,
+        14,
         negrito=True
     )
 
     fonte_tipo = carregar_fonte(
-        13,
-        negrito=False
+        11
     )
 
     # ========================================================
-    # PROCESSA ITEM POR ITEM
+    # ITENS
     # ========================================================
 
-    for indice, oferta in enumerate(ofertas):
+    for indice, oferta in enumerate(
+        ofertas
+    ):
 
-        coluna = indice % COLUNAS
-        linha = indice // COLUNAS
+        coluna = (
+            indice % COLUNAS
+        )
+
+        linha = (
+            indice // COLUNAS
+        )
 
         x = (
             MARGEM_LATERAL
@@ -1108,26 +1110,26 @@ async def gerar_imagem_loja(
                 x + CARD_LARGURA,
                 y + CARD_ALTURA
             ),
-            radius=18,
+            radius=14,
             fill=(18, 18, 24),
             outline=(255, 255, 255),
-            width=2
+            width=1
         )
 
         # ====================================================
         # ÁREA DA IMAGEM
         # ====================================================
 
-        area_x1 = x + 15
-        area_y1 = y + 12
+        area_x1 = x + 12
+        area_y1 = y + 10
         area_x2 = (
             x
             + CARD_LARGURA
-            - 15
+            - 12
         )
         area_y2 = (
             y
-            + 12
+            + 10
             + IMAGEM_ALTURA
         )
 
@@ -1138,12 +1140,12 @@ async def gerar_imagem_loja(
                 area_x2,
                 area_y2
             ),
-            radius=12,
+            radius=10,
             fill=(30, 30, 38)
         )
 
         # ====================================================
-        # IMAGEM DO ITEM
+        # IMAGEM
         # ====================================================
 
         imagem = None
@@ -1168,7 +1170,7 @@ async def gerar_imagem_loja(
 
                 pos_y = (
                     y
-                    + 12
+                    + 10
                     + (
                         IMAGEM_ALTURA
                         - imagem.height
@@ -1200,8 +1202,8 @@ async def gerar_imagem_loja(
         except Exception as erro:
 
             print(
-                f"[AVISO] Imagem do item "
-                f"{indice + 1}: {erro}"
+                f"[AVISO] Item {indice + 1}: "
+                f"{erro}"
             )
 
         finally:
@@ -1228,15 +1230,15 @@ async def gerar_imagem_loja(
                 "Item"
             ),
             fonte_nome,
-            CARD_LARGURA - 24
+            CARD_LARGURA - 20
         )
 
         texto_centralizado(
             draw,
-            x + 10,
-            y + 190,
-            x + CARD_LARGURA - 10,
-            y + 215,
+            x + 8,
+            y + 147,
+            x + CARD_LARGURA - 8,
+            y + 169,
             nome,
             fonte_nome,
             (255, 255, 255)
@@ -1253,10 +1255,10 @@ async def gerar_imagem_loja(
 
         texto_centralizado(
             draw,
-            x + 10,
-            y + 213,
-            x + CARD_LARGURA - 10,
-            y + 237,
+            x + 8,
+            y + 168,
+            x + CARD_LARGURA - 8,
+            y + 188,
             preco,
             fonte_preco,
             (255, 220, 70)
@@ -1273,25 +1275,24 @@ async def gerar_imagem_loja(
                 "Loja"
             ),
             fonte_tipo,
-            CARD_LARGURA - 24
+            CARD_LARGURA - 20
         )
 
         texto_centralizado(
             draw,
-            x + 10,
-            y + 236,
-            x + CARD_LARGURA - 10,
-            y + 255,
+            x + 8,
+            y + 188,
+            x + CARD_LARGURA - 8,
+            y + 202,
             tipo,
             fonte_tipo,
             (190, 190, 200)
         )
 
-        # Pequena pausa para não monopolizar CPU
         await asyncio.sleep(0)
 
     # ========================================================
-    # SALVA JPEG
+    # JPEG
     # ========================================================
 
     buffer = io.BytesIO()
@@ -1308,9 +1309,15 @@ async def gerar_imagem_loja(
 
         buffer.seek(0)
 
+        tamanho_mb = (
+            len(buffer.getbuffer())
+            / 1024
+            / 1024
+        )
+
         print(
-            f"[IMAGEM] Gerada: "
-            f"{len(buffer.getbuffer()) / 1024 / 1024:.2f} MB"
+            f"[IMAGEM] JPEG final: "
+            f"{tamanho_mb:.2f} MB"
         )
 
         return buffer
@@ -1318,7 +1325,7 @@ async def gerar_imagem_loja(
     except Exception as erro:
 
         print(
-            f"[ERRO] Salvando JPEG: {erro}"
+            f"[ERRO] JPEG: {erro}"
         )
 
         buffer.close()
@@ -1361,14 +1368,14 @@ async def buscar_mensagem(
     except discord.HTTPException as erro:
 
         print(
-            f"[AVISO] Erro buscando mensagem: {erro}"
+            f"[AVISO] Erro Discord: {erro}"
         )
 
         return None
 
 
 # ============================================================
-# PUBLICAR / EDITAR
+# PUBLICAR LOJA
 # ============================================================
 
 async def publicar_loja(
@@ -1384,7 +1391,7 @@ async def publicar_loja(
     )
 
     print(
-        "[IMAGEM] Gerando imagem..."
+        "[IMAGEM] Gerando loja..."
     )
 
     imagem = await gerar_imagem_loja(
@@ -1395,7 +1402,7 @@ async def publicar_loja(
     if imagem is None:
 
         print(
-            "[ERRO] Falha gerando imagem."
+            "[ERRO] Imagem não gerada."
         )
 
         return False
@@ -1449,7 +1456,7 @@ async def publicar_loja(
             message_id = mensagem.id
 
             print(
-                "[OK] Mensagem da loja editada."
+                "[OK] Mensagem editada."
             )
 
         else:
@@ -1462,7 +1469,7 @@ async def publicar_loja(
             message_id = mensagem.id
 
             print(
-                "[OK] Mensagem da loja criada."
+                "[OK] Mensagem criada."
             )
 
         salvar_estado(
@@ -1475,7 +1482,7 @@ async def publicar_loja(
     except discord.HTTPException as erro:
 
         print(
-            f"[ERRO] Discord HTTP: {erro}"
+            f"[ERRO] Discord: {erro}"
         )
 
         return False
@@ -1483,7 +1490,7 @@ async def publicar_loja(
     except Exception as erro:
 
         print(
-            f"[ERRO] Publicando loja: {erro}"
+            f"[ERRO] Publicação: {erro}"
         )
 
         return False
@@ -1499,7 +1506,7 @@ async def publicar_loja(
 
 
 # ============================================================
-# VERIFICA LOJA
+# VERIFICAR LOJA
 # ============================================================
 
 async def verificar_loja(
@@ -1525,10 +1532,6 @@ async def verificar_loja(
     if loja is None:
         return
 
-    # ========================================================
-    # HASH
-    # ========================================================
-
     shop_hash = (
         loja.get("hash")
         or loja.get("shopHash")
@@ -1537,7 +1540,7 @@ async def verificar_loja(
     if not shop_hash:
 
         print(
-            "[ERRO] API não retornou hash."
+            "[ERRO] Hash não encontrado."
         )
 
         return
@@ -1549,7 +1552,7 @@ async def verificar_loja(
     )
 
     print(
-        f"[LOJA] Hash atual: {shop_hash}"
+        f"[LOJA] Hash: {shop_hash}"
     )
 
     # ========================================================
@@ -1562,13 +1565,13 @@ async def verificar_loja(
     ):
 
         print(
-            "[LOJA] Nenhuma mudança."
+            "[LOJA] Sem alterações."
         )
 
         return
 
     # ========================================================
-    # NOVA LOJA
+    # ALTERAÇÃO
     # ========================================================
 
     if hash_anterior is None:
@@ -1584,15 +1587,15 @@ async def verificar_loja(
         )
 
         print(
-            "[LOJA] NOVA LOJA DETECTADA!"
+            "[LOJA] NOVA LOJA!"
         )
 
         print(
-            f"[LOJA] Anterior: {hash_anterior}"
+            f"[LOJA] Antigo: {hash_anterior}"
         )
 
         print(
-            f"[LOJA] Novo:     {shop_hash}"
+            f"[LOJA] Novo:   {shop_hash}"
         )
 
         print(
@@ -1604,14 +1607,13 @@ async def verificar_loja(
     )
 
     print(
-        f"[LOJA] Ofertas encontradas: "
-        f"{len(ofertas)}"
+        f"[LOJA] Ofertas: {len(ofertas)}"
     )
 
     if not ofertas:
 
         print(
-            "[ERRO] Nenhuma oferta encontrada."
+            "[ERRO] Nenhuma oferta."
         )
 
         return
@@ -1630,7 +1632,7 @@ async def verificar_loja(
 
 
 # ============================================================
-# LOOP
+# LOOP AUTOMÁTICO
 # ============================================================
 
 @tasks.loop(
@@ -1639,7 +1641,7 @@ async def verificar_loja(
 async def verificar_loja_loop():
 
     print(
-        "[LOJA] Verificando Fortnite API..."
+        "[LOJA] Consultando Fortnite API..."
     )
 
     await verificar_loja()
@@ -1654,8 +1656,15 @@ async def iniciar_monitoramento():
         "[LOJA] Monitoramento iniciado."
     )
 
-    # Primeira verificação imediata
-    await verificar_loja()
+    # IMPORTANTE:
+    # Não gera a imagem imediatamente no startup.
+    #
+    # O primeiro ciclo será executado pelo loop
+    # após o bot estar completamente estabilizado.
+    print(
+        "[LOJA] Primeira consulta será feita "
+        "pelo ciclo automático."
+    )
 
 
 # ============================================================
@@ -1675,6 +1684,10 @@ async def on_ready():
 
     print(
         f"[BOT] ID: {bot.user.id}"
+    )
+
+    print(
+        "[BOT] Memória otimizada para Deploy Hatch."
     )
 
     print(
@@ -1698,7 +1711,7 @@ async def on_message(message):
         return
 
     # ========================================================
-    # NÃO ALTERADO
+    # SISTEMA ORIGINAL
     # ========================================================
 
     if message.channel.id == CANAL_REACOES_ID:
@@ -1733,7 +1746,7 @@ async def on_message(message):
 
 
 # ============================================================
-# COMANDO MANUAL
+# COMANDO !TESTELOJA
 # ============================================================
 
 @bot.command(
