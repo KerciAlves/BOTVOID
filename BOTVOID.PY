@@ -1,20 +1,19 @@
 import os
-import gc
+import io
 import json
+import gc
 import asyncio
-import tempfile
-from io import BytesIO
-from datetime import datetime, timezone
+from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import aiohttp
 import discord
-from discord.ext import commands
-from PIL import Image, ImageDraw, ImageFont
+from discord.ext import commands, tasks
+from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
 
 # ============================================================
-# CONFIGURAÇÃO
+# CONFIGURAÇÕES
 # ============================================================
 
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -23,123 +22,192 @@ CANAL_REACOES_ID = 1556998399461691443
 CANAL_LOJA_ID = 1214658145243234324
 
 FORTNITE_SHOP_URL = "https://fortnite-api.com/v2/shop"
-
 IDIOMA = "pt-BR"
 
-INTERVALO_VERIFICACAO = 300  # 5 minutos
+INTERVALO_VERIFICACAO = 300
 
 SHOP_STATE_FILE = "shop_state.json"
 
 FUSO_BRASIL = ZoneInfo("America/Sao_Paulo")
 
-# Limite de segurança para imagens baixadas
+# Segurança de memória
 MAX_IMAGE_BYTES = 700_000
-
-# Tamanho máximo da imagem enviada ao Discord
-IMAGEM_LARGURA = 1200
-
-# Máximo de itens exibidos
 MAX_ITENS = 40
 
+# Tamanho da imagem final
+IMAGEM_LARGURA = 1200
 
 # ============================================================
-# DISCORD
+# CORES
 # ============================================================
 
-intents = discord.Intents.default()
-intents.message_content = True
+FUNDO = (8, 10, 22)
+FUNDO_2 = (13, 16, 34)
 
-bot = commands.Bot(
-    command_prefix="!",
-    intents=intents
-)
+BRANCO = (245, 248, 255)
+CINZA = (160, 166, 185)
+CINZA_ESCURO = (70, 75, 95)
 
+AZUL = (63, 155, 255)
+AZUL_CLARO = (83, 213, 255)
+
+ROXO = (155, 82, 255)
+ROXO_CLARO = (193, 111, 255)
+
+ROSA = (255, 76, 180)
+
+LARANJA = (255, 145, 45)
+AMARELO = (255, 205, 72)
+
+VERDE = (65, 215, 130)
 
 # ============================================================
 # FONTES
 # ============================================================
 
+
 def carregar_fonte(tamanho, negrito=False):
-    if negrito:
-        caminhos = [
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-            "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf",
-            "C:/Windows/Fonts/arialbd.ttf",
-        ]
+    caminhos = []
+
+    if os.name == "nt":
+        if negrito:
+            caminhos.extend([
+                "C:/Windows/Fonts/arialbd.ttf",
+                "C:/Windows/Fonts/segoeuib.ttf",
+            ])
+        else:
+            caminhos.extend([
+                "C:/Windows/Fonts/arial.ttf",
+                "C:/Windows/Fonts/segoeui.ttf",
+            ])
     else:
-        caminhos = [
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-            "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
-            "C:/Windows/Fonts/arial.ttf",
-        ]
+        if negrito:
+            caminhos.extend([
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+                "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf",
+            ])
+        else:
+            caminhos.extend([
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
+            ])
 
     for caminho in caminhos:
         try:
             return ImageFont.truetype(caminho, tamanho)
         except Exception:
-            pass
+            continue
 
     return ImageFont.load_default()
 
 
-FONT_TITULO = carregar_fonte(38, True)
-FONT_SUBTITULO = carregar_fonte(17, True)
-FONT_NOME = carregar_fonte(17, True)
-FONT_RARIDADE = carregar_fonte(11, True)
-FONT_PRECO = carregar_fonte(20, True)
-FONT_RODAPE = carregar_fonte(11, True)
-FONT_PEQUENA = carregar_fonte(10, False)
+FONTE_TITULO = carregar_fonte(48, True)
+FONTE_SUBTITULO = carregar_fonte(20, True)
+FONTE_SECAO = carregar_fonte(28, True)
+FONTE_ITEM = carregar_fonte(20, True)
+FONTE_CATEGORIA = carregar_fonte(14, True)
+FONTE_PRECO = carregar_fonte(21, True)
+FONTE_RARIDADE = carregar_fonte(12, True)
+FONTE_PEQUENA = carregar_fonte(13, False)
+FONTE_PEQUENA_NEGRITO = carregar_fonte(13, True)
+FONTE_DATA = carregar_fonte(16, True)
+FONTE_VOID = carregar_fonte(18, True)
 
 
 # ============================================================
-# CORES DAS RARIDADES
+# RARIDADES
 # ============================================================
 
-CORES_RARIDADE = {
-    "common": (150, 150, 160),
-    "uncommon": (50, 205, 100),
-    "rare": (50, 135, 255),
-    "epic": (185, 65, 255),
-    "legendary": (255, 165, 45),
-    "mythic": (255, 210, 55),
-    "icon": (240, 205, 75),
-    "default": (80, 130, 200),
-}
+
+def cor_raridade(raridade):
+    if not raridade:
+        return CINZA
+
+    r = str(raridade).lower()
+
+    if "lend" in r or "legend" in r:
+        return LARANJA
+
+    if "épico" in r or "epic" in r:
+        return ROXO
+
+    if "raro" in r or "rare" in r:
+        return AZUL
+
+    if "incomum" in r or "uncommon" in r:
+        return VERDE
+
+    if "mítico" in r or "mythic" in r:
+        return AMARELO
+
+    if "icon" in r:
+        return AMARELO
+
+    return CINZA
 
 
-def cor_raridade(nome):
-    texto = str(nome or "").lower()
+def nome_raridade(item):
+    raridade = item.get("rarity")
 
-    if "lend" in texto or "legend" in texto:
-        return CORES_RARIDADE["legendary"]
+    if isinstance(raridade, dict):
+        return (
+            raridade.get("displayValue")
+            or raridade.get("displayName")
+            or raridade.get("value")
+            or "COMUM"
+        )
 
-    if "épico" in texto or "epic" in texto:
-        return CORES_RARIDADE["epic"]
+    if isinstance(raridade, str):
+        return raridade
 
-    if "raro" in texto or "rare" in texto:
-        return CORES_RARIDADE["rare"]
-
-    if "incomum" in texto or "uncommon" in texto:
-        return CORES_RARIDADE["uncommon"]
-
-    if "mítico" in texto or "mythic" in texto:
-        return CORES_RARIDADE["mythic"]
-
-    if "ícone" in texto or "icon" in texto:
-        return CORES_RARIDADE["icon"]
-
-    if "comum" in texto or "common" in texto:
-        return CORES_RARIDADE["common"]
-
-    return CORES_RARIDADE["default"]
+    return "COMUM"
 
 
 # ============================================================
-# UTILITÁRIOS
+# ESTADO DA LOJA
 # ============================================================
 
-def limitar_texto(texto, limite):
-    texto = str(texto or "")
+
+def carregar_estado():
+    try:
+        if not os.path.exists(SHOP_STATE_FILE):
+            return {}
+
+        with open(SHOP_STATE_FILE, "r", encoding="utf-8") as arquivo:
+            return json.load(arquivo)
+
+    except Exception as erro:
+        print(f"[AVISO] Não foi possível carregar estado: {erro}")
+        return {}
+
+
+def salvar_estado(estado):
+    try:
+        with open(SHOP_STATE_FILE, "w", encoding="utf-8") as arquivo:
+            json.dump(
+                estado,
+                arquivo,
+                ensure_ascii=False,
+                indent=2
+            )
+    except Exception as erro:
+        print(f"[ERRO] Não foi possível salvar estado: {erro}")
+
+
+# ============================================================
+# TEXTO
+# ============================================================
+
+
+def texto_seguro(texto):
+    if texto is None:
+        return ""
+
+    return str(texto).strip()
+
+
+def cortar_texto(texto, limite):
+    texto = texto_seguro(texto)
 
     if len(texto) <= limite:
         return texto
@@ -147,107 +215,27 @@ def limitar_texto(texto, limite):
     return texto[:limite - 3] + "..."
 
 
-def texto_centralizado(draw, caixa, texto, fonte, cor):
-    x1, y1, x2, y2 = caixa
+def centralizar_texto(draw, texto, y, fonte, largura, fill):
+    caixa = draw.textbbox((0, 0), texto, font=fonte)
+    largura_texto = caixa[2] - caixa[0]
 
-    bbox = draw.textbbox(
-        (0, 0),
-        texto,
-        font=fonte
-    )
-
-    largura = bbox[2] - bbox[0]
-    altura = bbox[3] - bbox[1]
-
-    x = x1 + ((x2 - x1) - largura) / 2
-    y = y1 + ((y2 - y1) - altura) / 2 - bbox[1]
+    x = (largura - largura_texto) // 2
 
     draw.text(
-        (int(x), int(y)),
+        (x, y),
         texto,
         font=fonte,
-        fill=cor
+        fill=fill
     )
 
 
-def parse_data(valor):
-    if not valor:
-        return None
-
-    try:
-        texto = str(valor)
-
-        if texto.endswith("Z"):
-            texto = texto[:-1] + "+00:00"
-
-        data = datetime.fromisoformat(texto)
-
-        if data.tzinfo is None:
-            data = data.replace(
-                tzinfo=timezone.utc
-            )
-
-        return data
-
-    except Exception:
-        return None
-
-
 # ============================================================
-# ESTADO
+# API
 # ============================================================
 
-def carregar_estado():
-    if not os.path.exists(SHOP_STATE_FILE):
-        return {}
-
-    try:
-        with open(
-            SHOP_STATE_FILE,
-            "r",
-            encoding="utf-8"
-        ) as arquivo:
-            return json.load(arquivo)
-
-    except Exception:
-        return {}
-
-
-def salvar_estado(estado):
-    try:
-        arquivo_temporario = SHOP_STATE_FILE + ".tmp"
-
-        with open(
-            arquivo_temporario,
-            "w",
-            encoding="utf-8"
-        ) as arquivo:
-            json.dump(
-                estado,
-                arquivo,
-                ensure_ascii=False,
-                indent=2
-            )
-
-        os.replace(
-            arquivo_temporario,
-            SHOP_STATE_FILE
-        )
-
-    except Exception as erro:
-        print(
-            f"[STATE] Erro ao salvar: {erro}"
-        )
-
-
-# ============================================================
-# BUSCAR LOJA
-# ============================================================
 
 async def buscar_loja():
-    timeout = aiohttp.ClientTimeout(
-        total=20
-    )
+    timeout = aiohttp.ClientTimeout(total=25)
 
     headers = {
         "User-Agent": "VoidHelper/1.0"
@@ -261,320 +249,745 @@ async def buscar_loja():
         async with aiohttp.ClientSession(
             timeout=timeout,
             headers=headers
-        ) as session:
+        ) as sessao:
 
-            async with session.get(
+            async with sessao.get(
                 FORTNITE_SHOP_URL,
                 params=params
             ) as resposta:
 
                 if resposta.status != 200:
                     print(
-                        f"[API] HTTP {resposta.status}"
+                        f"[ERRO] Fortnite API respondeu HTTP {resposta.status}"
                     )
                     return None
 
                 return await resposta.json()
 
+    except asyncio.TimeoutError:
+        print("[ERRO] Timeout ao consultar Fortnite API.")
+        return None
+
     except Exception as erro:
-        print(
-            f"[API] Erro: {erro}"
-        )
+        print(f"[ERRO] Falha na API: {erro}")
         return None
 
 
 # ============================================================
-# EXTRAIR ITENS
+# EXTRAÇÃO DOS ITENS
 # ============================================================
 
-def extrair_itens(data):
-    dados = data.get(
-        "data",
-        {}
-    )
 
-    entries = dados.get(
-        "entries",
-        []
-    )
+def extrair_itens(dados):
+    try:
+        entries = dados.get("data", {}).get("entries", [])
 
-    agora = datetime.now(
-        timezone.utc
-    )
+        if not isinstance(entries, list):
+            return []
 
-    itens = []
-    ids_adicionados = set()
+    except Exception:
+        return []
+
+    agora = datetime.now(FUSO_BRASIL)
+
+    resultado = []
+    ids_processados = set()
 
     for entry in entries:
 
         if not isinstance(entry, dict):
             continue
 
-        in_date = parse_data(
-            entry.get("inDate")
-        )
+        # ----------------------------------------------------
+        # Verifica validade temporal da oferta
+        # ----------------------------------------------------
 
-        out_date = parse_data(
-            entry.get("outDate")
-        )
+        in_date = entry.get("inDate")
+        out_date = entry.get("outDate")
 
-        # Oferta futura
-        if in_date and in_date > agora:
+        try:
+            if in_date:
+                entrada = datetime.fromisoformat(
+                    in_date.replace("Z", "+00:00")
+                )
+
+                if entrada.tzinfo is None:
+                    entrada = entrada.replace(tzinfo=FUSO_BRASIL)
+
+                if agora.astimezone(entrada.tzinfo) < entrada:
+                    continue
+
+        except Exception:
+            pass
+
+        try:
+            if out_date:
+                saida = datetime.fromisoformat(
+                    out_date.replace("Z", "+00:00")
+                )
+
+                if saida.tzinfo is None:
+                    saida = saida.replace(tzinfo=FUSO_BRASIL)
+
+                if agora.astimezone(saida.tzinfo) > saida:
+                    continue
+
+        except Exception:
+            pass
+
+        itens_br = entry.get("brItems") or []
+
+        if not itens_br:
+            itens_br = entry.get("items") or []
+
+        if not isinstance(itens_br, list):
             continue
 
-        # Oferta expirada
-        if out_date and out_date < agora:
-            continue
-
-        br_items = entry.get(
-            "brItems"
-        ) or []
-
-        if not br_items:
-            continue
-
-        preco = entry.get(
-            "finalPrice"
-        )
-
-        if preco is None:
-            preco = entry.get(
-                "regularPrice",
-                0
-            )
-
-        for item in br_items:
+        for item in itens_br:
 
             if not isinstance(item, dict):
                 continue
 
-            item_id = item.get("id")
+            item_id = (
+                item.get("id")
+                or item.get("offerId")
+                or entry.get("offerId")
+            )
 
-            nome = item.get("name")
-
-            if not nome:
+            if not item_id:
                 continue
 
-            chave = item_id or nome
-
-            if chave in ids_adicionados:
+            if item_id in ids_processados:
                 continue
 
-            ids_adicionados.add(chave)
+            ids_processados.add(item_id)
 
-            tipo = item.get(
-                "type"
-            ) or {}
+            # ------------------------------------------------
+            # Nome
+            # ------------------------------------------------
+
+            nome = (
+                item.get("name")
+                or item.get("displayName")
+                or "Item desconhecido"
+            )
+
+            # ------------------------------------------------
+            # Categoria
+            # ------------------------------------------------
+
+            tipo = item.get("type")
 
             if isinstance(tipo, dict):
-                raridade = tipo.get(
-                    "displayValue",
-                    ""
+                categoria = (
+                    tipo.get("displayValue")
+                    or tipo.get("displayName")
+                    or tipo.get("value")
+                    or "ITEM"
                 )
             else:
-                raridade = ""
+                categoria = tipo or "ITEM"
 
-            imagens = item.get(
-                "images"
-            ) or {}
+            # ------------------------------------------------
+            # Raridade
+            # ------------------------------------------------
+
+            raridade = nome_raridade(item)
+
+            # ------------------------------------------------
+            # Imagem
+            # ------------------------------------------------
+
+            imagens = item.get("images") or {}
 
             imagem_url = (
                 imagens.get("featured")
                 or imagens.get("icon")
                 or imagens.get("smallIcon")
+                or imagens.get("small")
             )
 
-            itens.append({
-                "id": item_id,
-                "name": nome,
-                "rarity": raridade,
-                "image": imagem_url,
+            if not imagem_url:
+                continue
+
+            # ------------------------------------------------
+            # Preço
+            # ------------------------------------------------
+
+            preco = (
+                entry.get("finalPrice")
+                or entry.get("regularPrice")
+                or item.get("finalPrice")
+                or item.get("regularPrice")
+                or 0
+            )
+
+            resultado.append({
+                "id": str(item_id),
+                "name": texto_seguro(nome),
+                "category": texto_seguro(categoria),
+                "rarity": texto_seguro(raridade),
                 "price": preco,
-                "inDate": (
-                    in_date.isoformat()
-                    if in_date
-                    else None
-                ),
-                "offerId": entry.get(
-                    "offerId"
-                ),
+                "image": imagem_url,
             })
 
-            if len(itens) >= MAX_ITENS:
-                break
+            if len(resultado) >= MAX_ITENS:
+                return resultado
 
-        if len(itens) >= MAX_ITENS:
-            break
-
-    return itens
+    return resultado
 
 
 # ============================================================
 # DOWNLOAD DE IMAGEM
 # ============================================================
 
-async def baixar_imagem(session, url):
+
+async def baixar_imagem(sessao, url):
     if not url:
         return None
 
     try:
-        timeout = aiohttp.ClientTimeout(
-            total=8
-        )
-
-        async with session.get(
-            url,
-            timeout=timeout
-        ) as resposta:
+        async with sessao.get(url) as resposta:
 
             if resposta.status != 200:
                 return None
 
-            tamanho = resposta.content_length
+            content_length = resposta.headers.get("Content-Length")
 
-            if tamanho and tamanho > MAX_IMAGE_BYTES:
-                return None
+            if content_length:
+                try:
+                    if int(content_length) > MAX_IMAGE_BYTES:
+                        return None
+                except Exception:
+                    pass
 
             dados = await resposta.read()
 
             if len(dados) > MAX_IMAGE_BYTES:
                 return None
 
-            return dados
+            imagem = Image.open(io.BytesIO(dados))
+
+            # Converte para RGBA apenas localmente.
+            if imagem.mode not in ("RGB", "RGBA"):
+                imagem = imagem.convert("RGBA")
+
+            imagem.thumbnail(
+                (250, 210),
+                Image.Resampling.LANCZOS
+            )
+
+            return imagem
 
     except Exception as erro:
-        print(
-            f"[DOWNLOAD] Erro: {erro}"
-        )
+        print(f"[AVISO] Erro ao baixar imagem: {erro}")
         return None
 
 
 # ============================================================
-# FUNDO GAMER LEVE
+# FUNDO
 # ============================================================
 
+
 def criar_fundo(largura, altura):
-    # RGB = 3 bytes por pixel.
-    # Muito mais econômico que RGBA.
     imagem = Image.new(
         "RGB",
         (largura, altura),
-        (7, 10, 24)
+        FUNDO
     )
 
-    draw = ImageDraw.Draw(
-        imagem
-    )
+    draw = ImageDraw.Draw(imagem)
 
-    # Faixas horizontais simples
-    for y in range(
-        0,
-        altura,
-        30
-    ):
-        valor = int(
-            15 + (
-                20 * y / max(1, altura)
+    # Fundo em faixas horizontais
+    passo = 70
+
+    for y in range(0, altura, passo):
+        if (y // passo) % 2 == 0:
+            draw.rectangle(
+                (0, y, largura, y + passo),
+                fill=FUNDO_2
             )
-        )
 
+    # Linhas diagonais leves
+    for x in range(-altura, largura, 160):
         draw.line(
-            (
-                0,
-                y,
-                largura,
-                y
-            ),
-            fill=(
-                7,
-                12,
-                valor
-            ),
-            width=1
+            (x, 0, x + altura, altura),
+            fill=(20, 24, 48),
+            width=2
         )
 
-    # Linhas diagonais gamer
-    for x in range(
-        -altura,
-        largura,
-        150
-    ):
-        draw.line(
-            (
-                x,
-                altura,
-                x + altura,
-                0
-            ),
-            fill=(18, 28, 55),
-            width=1
-        )
+    # Linha superior
+    draw.rectangle(
+        (0, 0, largura, 5),
+        fill=ROXO
+    )
 
-    # Pequenas partículas
+    draw.rectangle(
+        (largura // 2, 0, largura, 5),
+        fill=AZUL_CLARO
+    )
+
+    # Pequenos pontos decorativos
     pontos = [
-        (80, 60),
-        (220, 120),
-        (390, 70),
-        (560, 105),
-        (740, 65),
-        (910, 130),
-        (1090, 80),
-        (1150, 180),
-        (130, 420),
-        (480, 520),
-        (830, 430),
-        (1080, 570),
+        (80, 110),
+        (240, 180),
+        (440, 100),
+        (680, 160),
+        (900, 90),
+        (1100, 180),
+        (1020, 460),
+        (130, 700),
+        (760, 620),
+        (1080, 800),
     ]
 
     for x, y in pontos:
-        if x < largura and y < altura:
+        if y < altura:
             draw.ellipse(
-                (
-                    x,
-                    y,
-                    x + 3,
-                    y + 3
-                ),
-                fill=(60, 130, 220)
+                (x, y, x + 3, y + 3),
+                fill=(80, 90, 150)
             )
 
     return imagem
 
 
 # ============================================================
-# V-BUCKS
+# CABEÇALHO
 # ============================================================
 
-def desenhar_vbucks(
-    draw,
-    x,
-    y,
-    tamanho=16
-):
-    metade = tamanho // 2
 
-    pontos = [
-        (x, y - metade),
-        (x + metade, y),
-        (x, y + metade),
-        (x - metade, y),
-    ]
+def desenhar_cabecalho(imagem, draw, altura):
+    largura = imagem.width
 
-    draw.polygon(
-        pontos,
-        fill=(80, 190, 245),
-        outline=(220, 245, 255)
+    # Área do header
+    draw.rounded_rectangle(
+        (30, 30, largura - 30, 190),
+        radius=24,
+        fill=(14, 17, 38),
+        outline=(40, 46, 78),
+        width=2
     )
 
+    # Faixa decorativa
+    draw.rounded_rectangle(
+        (30, 30, 420, 36),
+        radius=3,
+        fill=ROXO
+    )
+
+    draw.rounded_rectangle(
+        (420, 30, 680, 36),
+        radius=3,
+        fill=AZUL
+    )
+
+    draw.rounded_rectangle(
+        (680, 30, 850, 36),
+        radius=3,
+        fill=ROSA
+    )
+
+    # --------------------------------------------------------
+    # Título
+    # --------------------------------------------------------
+
+    draw.text(
+        (60, 55),
+        "FORTNITE",
+        font=FONTE_TITULO,
+        fill=BRANCO
+    )
+
+    draw.text(
+        (63, 108),
+        "ITEM SHOP",
+        font=FONTE_SUBTITULO,
+        fill=AZUL_CLARO
+    )
+
+    draw.text(
+        (63, 137),
+        "OS MELHORES ITENS, SEMPRE!",
+        font=FONTE_PEQUENA_NEGRITO,
+        fill=(170, 176, 205)
+    )
+
+    # --------------------------------------------------------
+    # Painel de atualização
+    # --------------------------------------------------------
+
+    painel_x = 700
+    painel_y = 52
+    painel_w = 220
+    painel_h = 105
+
+    draw.rounded_rectangle(
+        (
+            painel_x,
+            painel_y,
+            painel_x + painel_w,
+            painel_y + painel_h
+        ),
+        radius=16,
+        fill=(20, 24, 48),
+        outline=(52, 61, 100),
+        width=2
+    )
+
+    draw.text(
+        (painel_x + 18, painel_y + 12),
+        "LOJA ATUALIZADA EM",
+        font=FONTE_PEQUENA_NEGRITO,
+        fill=(135, 145, 180)
+    )
+
+    agora = datetime.now(FUSO_BRASIL)
+
+    data = agora.strftime("%d/%m/%Y")
+    horario = agora.strftime("%H:%M")
+
+    draw.text(
+        (painel_x + 18, painel_y + 36),
+        data,
+        font=FONTE_DATA,
+        fill=BRANCO
+    )
+
+    draw.text(
+        (painel_x + 18, painel_y + 62),
+        f"{horario} BRT",
+        font=FONTE_PEQUENA_NEGRITO,
+        fill=AZUL_CLARO
+    )
+
+    # --------------------------------------------------------
+    # Painel V-Bucks
+    # --------------------------------------------------------
+
+    vb_x = 945
+    vb_y = 52
+
+    draw.rounded_rectangle(
+        (vb_x, vb_y, largura - 60, vb_y + 105),
+        radius=16,
+        fill=(20, 24, 48),
+        outline=(52, 61, 100),
+        width=2
+    )
+
+    # Ícone V-Bucks estilizado
+    cx = vb_x + 38
+    cy = vb_y + 52
+
+    draw.ellipse(
+        (cx - 20, cy - 20, cx + 20, cy + 20),
+        fill=(82, 202, 255),
+        outline=(170, 240, 255),
+        width=2
+    )
+
+    draw.text(
+        (cx - 7, cy - 13),
+        "V",
+        font=FONTE_ITEM,
+        fill=(10, 35, 60)
+    )
+
+    draw.text(
+        (vb_x + 68, vb_y + 20),
+        "V-BUCKS",
+        font=FONTE_PEQUENA_NEGRITO,
+        fill=AZUL_CLARO
+    )
+
+    draw.text(
+        (vb_x + 68, vb_y + 45),
+        "USE SEUS V-BUCKS",
+        font=FONTE_PEQUENA_NEGRITO,
+        fill=BRANCO
+    )
+
+    draw.text(
+        (vb_x + 68, vb_y + 67),
+        "PARA GARANTIR SEUS ITENS",
+        font=carregar_fonte(10, False),
+        fill=(135, 145, 180)
+    )
+
+
+# ============================================================
+# NAVEGAÇÃO
+# ============================================================
+
+
+def desenhar_navegacao(draw, y):
+    largura = IMAGEM_LARGURA
+
+    abas = [
+        ("★", "DESTAQUES"),
+        ("◈", "DIÁRIO"),
+        ("◆", "SKINS"),
+        ("⚒", "PICARETAS"),
+        ("◇", "ASA-DELTA"),
+        ("●", "GESTOS"),
+        ("♪", "MÚSICAS"),
+    ]
+
+    x = 35
+
+    for indice, (icone, nome) in enumerate(abas):
+
+        largura_aba = 150
+
+        if indice == 0:
+            fill = (79, 45, 150)
+            outline = ROXO_CLARO
+        else:
+            fill = (17, 21, 42)
+            outline = (42, 48, 75)
+
+        draw.rounded_rectangle(
+            (x, y, x + largura_aba, y + 42),
+            radius=12,
+            fill=fill,
+            outline=outline,
+            width=1
+        )
+
+        draw.text(
+            (x + 12, y + 11),
+            icone,
+            font=FONTE_PEQUENA_NEGRITO,
+            fill=BRANCO
+        )
+
+        draw.text(
+            (x + 34, y + 12),
+            nome,
+            font=carregar_fonte(11, True),
+            fill=BRANCO
+        )
+
+        x += largura_aba + 8
+
+        if x > largura - 170:
+            break
+
+
+# ============================================================
+# CARD DE ITEM
+# ============================================================
+
+
+def desenhar_card(
+    imagem,
+    draw,
+    item,
+    x,
+    y,
+    largura,
+    altura,
+    imagem_item
+):
+    raridade = item.get("rarity", "COMUM")
+    cor = cor_raridade(raridade)
+
+    # --------------------------------------------------------
+    # Card
+    # --------------------------------------------------------
+
+    draw.rounded_rectangle(
+        (x, y, x + largura, y + altura),
+        radius=18,
+        fill=(16, 19, 38),
+        outline=(42, 48, 76),
+        width=2
+    )
+
+    # Linha de raridade
+    draw.rounded_rectangle(
+        (x + 1, y + 1, x + largura - 1, y + 10),
+        radius=6,
+        fill=cor
+    )
+
+    # --------------------------------------------------------
+    # Label raridade
+    # --------------------------------------------------------
+
+    label = raridade.upper()
+
+    draw.rounded_rectangle(
+        (x + 12, y + 18, x + 105, y + 42),
+        radius=8,
+        fill=cor
+    )
+
+    draw.text(
+        (x + 19, y + 24),
+        label,
+        font=FONTE_RARIDADE,
+        fill=(10, 12, 20)
+    )
+
+    # --------------------------------------------------------
+    # Área da imagem
+    # --------------------------------------------------------
+
+    area_top = y + 48
+    area_bottom = y + altura - 92
+
+    area_x1 = x + 10
+    area_x2 = x + largura - 10
+
+    draw.rounded_rectangle(
+        (
+            area_x1,
+            area_top,
+            area_x2,
+            area_bottom
+        ),
+        radius=13,
+        fill=(10, 13, 28)
+    )
+
+    # Pequeno brilho superior
     draw.line(
         (
-            x,
-            y - 5,
-            x,
-            y + 5
+            area_x1 + 12,
+            area_top + 2,
+            area_x2 - 12,
+            area_top + 2
         ),
-        fill=(255, 255, 255),
+        fill=cor,
         width=2
+    )
+
+    # --------------------------------------------------------
+    # Imagem do item
+    # --------------------------------------------------------
+
+    if imagem_item is not None:
+
+        try:
+            img = imagem_item.copy()
+
+            max_w = int(largura * 0.82)
+            max_h = int((area_bottom - area_top) * 0.82)
+
+            img.thumbnail(
+                (max_w, max_h),
+                Image.Resampling.LANCZOS
+            )
+
+            iw, ih = img.size
+
+            pos_x = x + (largura - iw) // 2
+            pos_y = area_top + (
+                (area_bottom - area_top - ih) // 2
+            )
+
+            if img.mode == "RGBA":
+                imagem.paste(
+                    img,
+                    (pos_x, pos_y),
+                    img
+                )
+            else:
+                imagem.paste(
+                    img,
+                    (pos_x, pos_y)
+                )
+
+            del img
+
+        except Exception as erro:
+            print(f"[AVISO] Erro renderizando item: {erro}")
+
+    # --------------------------------------------------------
+    # Nome
+    # --------------------------------------------------------
+
+    nome = cortar_texto(
+        item.get("name", "Item"),
+        24
+    )
+
+    categoria = cortar_texto(
+        item.get("category", "ITEM"),
+        20
+    )
+
+    nome_fonte = FONTE_ITEM
+
+    caixa = draw.textbbox(
+        (0, 0),
+        nome,
+        font=nome_fonte
+    )
+
+    nome_largura = caixa[2] - caixa[0]
+
+    if nome_largura > largura - 24:
+        nome_fonte = carregar_fonte(17, True)
+
+    draw.text(
+        (x + 12, y + altura - 78),
+        nome,
+        font=nome_fonte,
+        fill=BRANCO
+    )
+
+    # Categoria
+    draw.text(
+        (x + 12, y + altura - 51),
+        categoria.upper(),
+        font=FONTE_CATEGORIA,
+        fill=(125, 132, 160)
+    )
+
+    # --------------------------------------------------------
+    # Preço
+    # --------------------------------------------------------
+
+    preco = item.get("price", 0)
+
+    try:
+        preco_texto = f"{int(preco):,}".replace(",", ".")
+    except Exception:
+        preco_texto = str(preco)
+
+    # moeda V-Bucks
+    moeda_x = x + largura - 55
+    moeda_y = y + altura - 59
+
+    draw.ellipse(
+        (
+            moeda_x,
+            moeda_y,
+            moeda_x + 27,
+            moeda_y + 27
+        ),
+        fill=(82, 202, 255),
+        outline=(170, 240, 255),
+        width=1
+    )
+
+    draw.text(
+        (moeda_x + 8, moeda_y + 5),
+        "V",
+        font=carregar_fonte(12, True),
+        fill=(8, 35, 58)
+    )
+
+    draw.text(
+        (
+            moeda_x - 65,
+            moeda_y + 2
+        ),
+        preco_texto,
+        font=FONTE_PRECO,
+        fill=BRANCO
     )
 
 
@@ -582,855 +995,542 @@ def desenhar_vbucks(
 # GERAR IMAGEM
 # ============================================================
 
-async def gerar_imagem_loja(
-    itens,
-    data_loja
-):
+
+async def gerar_imagem_loja(itens):
     if not itens:
+        print("[AVISO] Nenhum item para gerar.")
         return None
 
     # --------------------------------------------------------
-    # DIMENSÕES
+    # Layout
     # --------------------------------------------------------
 
-    largura = IMAGEM_LARGURA
+    margem = 30
+    espacamento = 18
 
     colunas = 4
 
-    margem = 30
-
-    espaco = 14
-
-    topo = 150
-
-    rodape = 55
-
-    card_largura = (
-        largura
+    largura_card = (
+        IMAGEM_LARGURA
         - (margem * 2)
-        - (espaco * 3)
-    ) // 4
-
-    card_altura = 340
-
-    linhas = (
-        len(itens)
-        + colunas
-        - 1
+        - (espacamento * (colunas - 1))
     ) // colunas
 
-    altura = (
-        margem
-        + topo
-        + (
-            linhas
-            * card_altura
-        )
-        + (
-            max(0, linhas - 1)
-            * espaco
-        )
-        + rodape
+    altura_card = 330
+
+    header_altura = 190
+    nav_y = 205
+    nav_altura = 42
+
+    secao_y = 265
+
+    inicio_cards = 315
+
+    linhas = (
+        (len(itens) + colunas - 1)
+        // colunas
+    )
+
+    # Footer
+    footer_altura = 150
+
+    altura_total = (
+        inicio_cards
+        + (linhas * altura_card)
+        + ((linhas - 1) * espacamento)
+        + footer_altura
+        + 30
     )
 
     # --------------------------------------------------------
-    # FUNDO
+    # Cria imagem
     # --------------------------------------------------------
 
     imagem = criar_fundo(
-        largura,
-        altura
+        IMAGEM_LARGURA,
+        altura_total
     )
 
-    draw = ImageDraw.Draw(
-        imagem
+    draw = ImageDraw.Draw(imagem)
+
+    # --------------------------------------------------------
+    # Header
+    # --------------------------------------------------------
+
+    desenhar_cabecalho(
+        imagem,
+        draw,
+        altura_total
     )
 
     # --------------------------------------------------------
-    # HEADER
+    # Navegação
     # --------------------------------------------------------
 
-    draw.rectangle(
-        (
-            0,
-            0,
-            largura,
-            topo
-        ),
-        fill=(5, 8, 20)
-    )
-
-    # Barra azul
-    draw.rectangle(
-        (
-            0,
-            topo - 4,
-            largura,
-            topo
-        ),
-        fill=(55, 145, 255)
-    )
-
-    # Linha decorativa
-    draw.line(
-        (
-            margem,
-            22,
-            largura - margem,
-            22
-        ),
-        fill=(30, 65, 120),
-        width=1
-    )
-
-    texto_centralizado(
+    desenhar_navegacao(
         draw,
-        (
-            0,
-            30,
-            largura,
-            76
-        ),
-        "FORTNITE ITEM SHOP",
-        FONT_TITULO,
-        (240, 247, 255)
+        nav_y
     )
 
-    # Data
-    texto_data = "ATUALIZAÇÃO DA LOJA"
+    # --------------------------------------------------------
+    # Seção
+    # --------------------------------------------------------
 
-    if data_loja:
-        data = parse_data(
-            data_loja
-        )
-
-        if data:
-            data_br = data.astimezone(
-                FUSO_BRASIL
-            )
-
-            texto_data = (
-                "ATUALIZAÇÃO • "
-                + data_br.strftime(
-                    "%d/%m/%Y • %H:%M"
-                )
-            )
-
-    texto_centralizado(
-        draw,
-        (
-            0,
-            80,
-            largura,
-            112
-        ),
-        texto_data,
-        FONT_SUBTITULO,
-        (100, 190, 255)
-    )
-
-    # Contador
-    contador = f"{len(itens)} ITENS"
-
-    bbox = draw.textbbox(
-        (0, 0),
-        contador,
-        font=FONT_PEQUENA
-    )
-
-    contador_largura = (
-        bbox[2] - bbox[0]
-    )
-
-    cx2 = largura - margem
-    cx1 = (
-        cx2
-        - contador_largura
-        - 24
-    )
-
-    draw.rounded_rectangle(
-        (
-            cx1,
-            118,
-            cx2,
-            140
-        ),
-        radius=10,
-        fill=(15, 28, 55),
-        outline=(45, 115, 210)
+    draw.text(
+        (35, secao_y),
+        "★ DESTAQUES",
+        font=FONTE_SECAO,
+        fill=BRANCO
     )
 
     draw.text(
-        (
-            cx1 + 12,
-            123
-        ),
-        contador,
-        font=FONT_PEQUENA,
-        fill=(150, 210, 255)
+        (760, secao_y + 8),
+        "ITENS DA LOJA HOJE",
+        font=FONTE_PEQUENA_NEGRITO,
+        fill=(120, 130, 165)
+    )
+
+    draw.line(
+        (35, secao_y + 43, IMAGEM_LARGURA - 35, secao_y + 43),
+        fill=(45, 50, 78),
+        width=1
     )
 
     # --------------------------------------------------------
-    # CONEXÃO HTTP
+    # Sessão HTTP única
     # --------------------------------------------------------
 
-    timeout = aiohttp.ClientTimeout(
-        total=10
-    )
+    timeout = aiohttp.ClientTimeout(total=20)
+
+    headers = {
+        "User-Agent": "VoidHelper/1.0"
+    }
 
     async with aiohttp.ClientSession(
         timeout=timeout,
-        headers={
-            "User-Agent": "VoidHelper/1.0"
-        }
-    ) as session:
-
-        # ----------------------------------------------------
-        # CARDS
-        # ----------------------------------------------------
+        headers=headers
+    ) as sessao:
 
         for indice, item in enumerate(itens):
 
-            coluna = (
-                indice % colunas
-            )
-
-            linha = (
-                indice // colunas
-            )
+            linha = indice // colunas
+            coluna = indice % colunas
 
             x = (
                 margem
-                + coluna
-                * (
-                    card_largura
-                    + espaco
-                )
+                + coluna * (largura_card + espacamento)
             )
 
             y = (
-                margem
-                + topo
-                + linha
-                * (
-                    card_altura
-                    + espaco
-                )
+                inicio_cards
+                + linha * (altura_card + espacamento)
             )
 
-            cor = cor_raridade(
-                item.get(
-                    "rarity"
-                )
-            )
-
-            # ------------------------------------------------
-            # CARD
-            # ------------------------------------------------
-
-            draw.rounded_rectangle(
-                (
-                    x,
-                    y,
-                    x + card_largura,
-                    y + card_altura
-                ),
-                radius=14,
-                fill=(12, 16, 31),
-                outline=(
-                    cor[0],
-                    cor[1],
-                    cor[2]
-                ),
-                width=2
-            )
-
-            # Faixa superior da raridade
-            draw.rounded_rectangle(
-                (
-                    x + 1,
-                    y + 1,
-                    x + card_largura - 1,
-                    y + 8
-                ),
-                radius=7,
-                fill=cor
-            )
-
-            # ------------------------------------------------
-            # ÁREA DA IMAGEM
-            # ------------------------------------------------
-
-            img_x1 = x + 12
-            img_y1 = y + 18
-            img_x2 = (
-                x
-                + card_largura
-                - 12
-            )
-            img_y2 = y + 218
-
-            draw.rounded_rectangle(
-                (
-                    img_x1,
-                    img_y1,
-                    img_x2,
-                    img_y2
-                ),
-                radius=10,
-                fill=(7, 10, 23),
-                outline=(25, 40, 70)
-            )
-
-            # ------------------------------------------------
-            # IMAGEM DO ITEM
-            # ------------------------------------------------
-
-            dados_imagem = await baixar_imagem(
-                session,
-                item.get("image")
-            )
-
-            if dados_imagem:
-
-                item_img = None
-
-                try:
-                    item_img = Image.open(
-                        BytesIO(dados_imagem)
-                    ).convert("RGBA")
-
-                    item_img.thumbnail(
-                        (
-                            img_x2 - img_x1 - 14,
-                            img_y2 - img_y1 - 14
-                        ),
-                        Image.Resampling.LANCZOS
-                    )
-
-                    pos_x = (
-                        img_x1
-                        + (
-                            (
-                                img_x2
-                                - img_x1
-                            )
-                            - item_img.width
-                        ) // 2
-                    )
-
-                    pos_y = (
-                        img_y1
-                        + (
-                            (
-                                img_y2
-                                - img_y1
-                            )
-                            - item_img.height
-                        ) // 2
-                    )
-
-                    imagem.paste(
-                        item_img,
-                        (
-                            pos_x,
-                            pos_y
-                        ),
-                        item_img
-                    )
-
-                    del item_img
-
-                except Exception as erro:
-                    print(
-                        f"[IMAGEM] "
-                        f"Erro ao processar: {erro}"
-                    )
-
-                finally:
-                    del dados_imagem
-                    gc.collect()
-
-            # ------------------------------------------------
-            # RARIDADE
-            # ------------------------------------------------
-
-            raridade = limitar_texto(
-                item.get(
-                    "rarity",
-                    "ITEM"
-                ).upper(),
-                18
-            )
-
-            texto_centralizado(
-                draw,
-                (
-                    x + 12,
-                    y + 228,
-                    x + card_largura - 12,
-                    y + 250
-                ),
-                raridade,
-                FONT_RARIDADE,
-                cor
-            )
-
-            # ------------------------------------------------
-            # NOME
-            # ------------------------------------------------
-
-            nome = limitar_texto(
-                item.get(
-                    "name",
-                    "Item"
-                ),
-                25
-            )
-
-            texto_centralizado(
-                draw,
-                (
-                    x + 12,
-                    y + 252,
-                    x + card_largura - 12,
-                    y + 286
-                ),
-                nome,
-                FONT_NOME,
-                (240, 245, 255)
-            )
-
-            # ------------------------------------------------
-            # PREÇO
-            # ------------------------------------------------
+            imagem_item = None
 
             try:
-                preco = int(
-                    item.get(
-                        "price",
-                        0
-                    )
+                imagem_item = await baixar_imagem(
+                    sessao,
+                    item.get("image")
                 )
-            except Exception:
-                preco = 0
 
-            preco_texto = (
-                f"{preco:,}".replace(
-                    ",",
-                    "."
+                desenhar_card(
+                    imagem,
+                    draw,
+                    item,
+                    x,
+                    y,
+                    largura_card,
+                    altura_card,
+                    imagem_item
                 )
-            )
 
-            preco_bbox = draw.textbbox(
-                (0, 0),
-                preco_texto,
-                font=FONT_PRECO
-            )
-
-            preco_largura = (
-                preco_bbox[2]
-                - preco_bbox[0]
-            )
-
-            grupo_largura = (
-                preco_largura + 30
-            )
-
-            preco_x = (
-                x
-                + (
-                    card_largura
-                    - grupo_largura
-                ) // 2
-            )
-
-            preco_y = y + 302
-
-            desenhar_vbucks(
-                draw,
-                preco_x + 9,
-                preco_y + 10,
-                17
-            )
-
-            draw.text(
-                (
-                    preco_x + 24,
-                    preco_y
-                ),
-                preco_texto,
-                font=FONT_PRECO,
-                fill=(105, 210, 255)
-            )
-
-            # ------------------------------------------------
-            # LIBERA MEMÓRIA
-            # ------------------------------------------------
-
-            gc.collect()
-
-    # --------------------------------------------------------
-    # RODAPÉ
-    # --------------------------------------------------------
-
-    rodape_y = (
-        altura - rodape + 16
-    )
-
-    draw.line(
-        (
-            margem,
-            rodape_y - 8,
-            largura - margem,
-            rodape_y - 8
-        ),
-        fill=(30, 55, 95),
-        width=1
-    )
-
-    draw.text(
-        (
-            margem,
-            rodape_y
-        ),
-        "VOIDHELPER",
-        font=FONT_RODAPE,
-        fill=(80, 180, 255)
-    )
-
-    texto_final = (
-        "FORTNITE SHOP • ATUALIZAÇÃO AUTOMÁTICA"
-    )
-
-    bbox = draw.textbbox(
-        (0, 0),
-        texto_final,
-        font=FONT_PEQUENA
-    )
-
-    draw.text(
-        (
-            largura
-            - margem
-            - (
-                bbox[2]
-                - bbox[0]
-            ),
-            rodape_y + 2
-        ),
-        texto_final,
-        font=FONT_PEQUENA,
-        fill=(100, 115, 145)
-    )
-
-    # --------------------------------------------------------
-    # SALVAR
-    # --------------------------------------------------------
-
-    arquivo = tempfile.NamedTemporaryFile(
-        suffix=".jpg",
-        delete=False
-    )
-
-    caminho = arquivo.name
-    arquivo.close()
-
-    imagem.save(
-        caminho,
-        "JPEG",
-        quality=68
-    )
-
-    del draw
-    del imagem
-
-    gc.collect()
-
-    return caminho
-
-
-# ============================================================
-# ATUALIZAR LOJA
-# ============================================================
-
-async def atualizar_loja():
-
-    await bot.wait_until_ready()
-
-    print(
-        "[LOJA] Sistema iniciado."
-    )
-
-    while not bot.is_closed():
-
-        try:
-
-            dados = await buscar_loja()
-
-            if not dados:
+            except Exception as erro:
                 print(
-                    "[LOJA] API indisponível."
+                    f"[AVISO] Erro processando item "
+                    f"{item.get('name')}: {erro}"
                 )
 
-                await asyncio.sleep(
-                    INTERVALO_VERIFICACAO
-                )
-                continue
-
-            data = dados.get(
-                "data",
-                {}
-            )
-
-            shop_hash = data.get(
-                "hash"
-            )
-
-            data_loja = data.get(
-                "date"
-            )
-
-            if not shop_hash:
-
-                print(
-                    "[LOJA] Hash não encontrado."
-                )
-
-                await asyncio.sleep(
-                    INTERVALO_VERIFICACAO
-                )
-                continue
-
-            estado = carregar_estado()
-
-            hash_anterior = estado.get(
-                "shop_hash"
-            )
-
-            # ------------------------------------------------
-            # NÃO MUDOU
-            # ------------------------------------------------
-
-            if hash_anterior == shop_hash:
-
-                print(
-                    "[LOJA] Sem atualização."
-                )
-
-                await asyncio.sleep(
-                    INTERVALO_VERIFICACAO
-                )
-                continue
-
-            print(
-                "[LOJA] Nova atualização encontrada!"
-            )
-
-            # ------------------------------------------------
-            # ITENS
-            # ------------------------------------------------
-
-            itens = extrair_itens(
-                dados
-            )
-
-            print(
-                f"[LOJA] "
-                f"{len(itens)} itens encontrados."
-            )
-
-            if not itens:
-
-                print(
-                    "[LOJA] Nenhum item válido."
-                )
-
-                await asyncio.sleep(
-                    INTERVALO_VERIFICACAO
-                )
-                continue
-
-            # ------------------------------------------------
-            # GERAR
-            # ------------------------------------------------
-
-            caminho = await gerar_imagem_loja(
-                itens,
-                data_loja
-            )
-
-            if not caminho:
-
-                print(
-                    "[LOJA] Falha na imagem."
-                )
-
-                await asyncio.sleep(
-                    INTERVALO_VERIFICACAO
-                )
-                continue
-
-            # ------------------------------------------------
-            # CANAL
-            # ------------------------------------------------
-
-            canal = bot.get_channel(
-                CANAL_LOJA_ID
-            )
-
-            if canal is None:
-
-                try:
-                    canal = await bot.fetch_channel(
-                        CANAL_LOJA_ID
-                    )
-
-                except Exception as erro:
-
-                    print(
-                        f"[LOJA] "
-                        f"Erro canal: {erro}"
-                    )
-
+            finally:
+                if imagem_item is not None:
                     try:
-                        os.remove(caminho)
+                        imagem_item.close()
                     except Exception:
                         pass
 
-                    await asyncio.sleep(
-                        INTERVALO_VERIFICACAO
-                    )
-                    continue
+                    del imagem_item
 
-            # ------------------------------------------------
-            # MENSAGEM ANTERIOR
-            # ------------------------------------------------
+                gc.collect()
 
-            mensagem = None
+    # --------------------------------------------------------
+    # Footer
+    # --------------------------------------------------------
 
-            mensagem_id = estado.get(
-                "message_id"
-            )
+    footer_y = inicio_cards + (
+        linhas * altura_card
+    ) + (
+        (linhas - 1) * espacamento
+    ) + 25
 
-            if mensagem_id:
+    footer_bottom = altura_total - 25
 
-                try:
+    draw.rounded_rectangle(
+        (
+            30,
+            footer_y,
+            IMAGEM_LARGURA - 30,
+            footer_bottom
+        ),
+        radius=20,
+        fill=(14, 17, 37),
+        outline=(45, 50, 80),
+        width=2
+    )
 
-                    mensagem = (
-                        await canal.fetch_message(
-                            int(mensagem_id)
-                        )
-                    )
+    # Discord
+    draw.ellipse(
+        (
+            55,
+            footer_y + 32,
+            105,
+            footer_y + 82
+        ),
+        fill=(88, 101, 242)
+    )
 
-                except Exception:
-                    mensagem = None
+    draw.text(
+        (70, footer_y + 43),
+        "D",
+        font=carregar_fonte(22, True),
+        fill=BRANCO
+    )
 
-            # ------------------------------------------------
-            # ENVIAR
-            # ------------------------------------------------
+    draw.text(
+        (125, footer_y + 25),
+        "FIQUE POR DENTRO!",
+        font=FONTE_VOID,
+        fill=BRANCO
+    )
 
-            arquivo = discord.File(
-                caminho,
-                filename="fortnite-shop.jpg"
-            )
+    draw.text(
+        (125, footer_y + 52),
+        "Entre no nosso servidor do Discord",
+        font=FONTE_PEQUENA,
+        fill=(150, 158, 185)
+    )
 
-            texto = (
-                "🎮 **FORTNITE ITEM SHOP**\n"
-                "⚡ **Nova atualização da loja!**\n\n"
-                f"🛍️ **{len(itens)} itens**\n"
-                "🤖 Atualizado automaticamente pelo VoidHelper."
-            )
+    draw.text(
+        (125, footer_y + 74),
+        "e receba novidades em primeira mão!",
+        font=FONTE_PEQUENA,
+        fill=(150, 158, 185)
+    )
 
-            try:
+    # Código
+    central_x = 600
 
-                if mensagem:
+    draw.text(
+        (central_x, footer_y + 25),
+        "USE O CÓDIGO",
+        font=FONTE_PEQUENA_NEGRITO,
+        fill=ROXO_CLARO,
+        anchor="mm"
+    )
 
-                    await mensagem.edit(
-                        content=texto,
-                        attachments=[
-                            arquivo
-                        ]
-                    )
+    draw.text(
+        (central_x, footer_y + 53),
+        "VOIDHELPER",
+        font=carregar_fonte(25, True),
+        fill=BRANCO,
+        anchor="mm"
+    )
 
-                    print(
-                        "[LOJA] Mensagem editada."
-                    )
+    # Slogan
+    draw.text(
+        (965, footer_y + 30),
+        "Mais itens.",
+        font=FONTE_VOID,
+        fill=AZUL_CLARO,
+        anchor="mm"
+    )
 
-                else:
+    draw.text(
+        (965, footer_y + 58),
+        "Mais diversão.",
+        font=FONTE_VOID,
+        fill=ROXO_CLARO,
+        anchor="mm"
+    )
 
-                    mensagem = await canal.send(
-                        content=texto,
-                        file=arquivo
-                    )
+    draw.text(
+        (965, footer_y + 83),
+        "VOIDHELPER",
+        font=FONTE_PEQUENA_NEGRITO,
+        fill=(110, 118, 150),
+        anchor="mm"
+    )
 
-                    print(
-                        "[LOJA] Mensagem criada."
-                    )
+    # --------------------------------------------------------
+    # Salvar em memória
+    # --------------------------------------------------------
 
-            except Exception as erro:
+    buffer = io.BytesIO()
 
-                print(
-                    f"[LOJA] "
-                    f"Erro Discord: {erro}"
-                )
+    imagem.save(
+        buffer,
+        format="JPEG",
+        quality=67,
+        optimize=True,
+        progressive=True
+    )
 
-                try:
-                    os.remove(caminho)
-                except Exception:
-                    pass
+    imagem.close()
 
-                await asyncio.sleep(
-                    INTERVALO_VERIFICACAO
-                )
-                continue
+    buffer.seek(0)
 
-            # ------------------------------------------------
-            # SALVAR ESTADO
-            # ------------------------------------------------
+    tamanho = len(buffer.getvalue())
 
-            salvar_estado({
-                "shop_hash": shop_hash,
-                "message_id": mensagem.id,
-                "shop_date": data_loja,
-                "items_count": len(itens),
-                "updated_at": datetime.now(
-                    timezone.utc
-                ).isoformat()
-            })
+    print(
+        f"[IMAGEM] Gerada: "
+        f"{tamanho / 1024:.1f} KB"
+    )
 
-            # ------------------------------------------------
-            # LIMPAR
-            # ------------------------------------------------
+    # --------------------------------------------------------
+    # Segurança de memória/arquivo
+    # --------------------------------------------------------
 
-            try:
-                os.remove(caminho)
-            except Exception:
-                pass
-
-            gc.collect()
-
-            print(
-                "[LOJA] Atualização concluída."
-            )
-
-        except Exception as erro:
-
-            print(
-                f"[LOJA] Erro geral: {erro}"
-            )
-
-            gc.collect()
-
-        await asyncio.sleep(
-            INTERVALO_VERIFICACAO
+    if tamanho > MAX_IMAGE_BYTES:
+        print(
+            "[AVISO] Imagem ultrapassou o limite. "
+            "Tentando compressão adicional."
         )
 
+        buffer.seek(0)
+
+        imagem_temp = Image.open(buffer)
+
+        novo_buffer = io.BytesIO()
+
+        imagem_temp.save(
+            novo_buffer,
+            format="JPEG",
+            quality=52,
+            optimize=True,
+            progressive=True
+        )
+
+        imagem_temp.close()
+
+        buffer.close()
+
+        buffer = novo_buffer
+        buffer.seek(0)
+
+        print(
+            f"[IMAGEM] Após compressão: "
+            f"{len(buffer.getvalue()) / 1024:.1f} KB"
+        )
+
+    gc.collect()
+
+    return buffer
+
 
 # ============================================================
-# REAÇÕES
+# ATUALIZAR MENSAGEM DA LOJA
 # ============================================================
+
+
+async def atualizar_loja(forcar=False):
+    print("[LOJA] Verificando loja Fortnite...")
+
+    dados = await buscar_loja()
+
+    if not dados:
+        return
+
+    try:
+        data = dados.get("data", {})
+        shop_hash = data.get("hash")
+
+    except Exception:
+        print("[ERRO] Resposta inválida da API.")
+        return
+
+    if not shop_hash:
+        print("[ERRO] Hash da loja não encontrado.")
+        return
+
+    estado = carregar_estado()
+
+    hash_anterior = estado.get("shop_hash")
+
+    if not forcar and hash_anterior == shop_hash:
+        print("[LOJA] Nenhuma alteração detectada.")
+        return
+
+    print("[LOJA] Nova loja detectada.")
+
+    itens = extrair_itens(dados)
+
+    if not itens:
+        print("[LOJA] Nenhum item encontrado.")
+        return
+
+    print(
+        f"[LOJA] {len(itens)} itens encontrados."
+    )
+
+    imagem_buffer = await gerar_imagem_loja(itens)
+
+    if not imagem_buffer:
+        print("[ERRO] Não foi possível gerar imagem.")
+        return
+
+    try:
+        canal = bot.get_channel(CANAL_LOJA_ID)
+
+        if canal is None:
+            canal = await bot.fetch_channel(
+                CANAL_LOJA_ID
+            )
+
+        if canal is None:
+            print("[ERRO] Canal da loja não encontrado.")
+            return
+
+        # ----------------------------------------------------
+        # Recupera mensagem existente
+        # ----------------------------------------------------
+
+        message_id = estado.get("message_id")
+
+        mensagem = None
+
+        if message_id:
+            try:
+                mensagem = await canal.fetch_message(
+                    int(message_id)
+                )
+
+            except discord.NotFound:
+                mensagem = None
+
+            except discord.HTTPException as erro:
+                print(
+                    f"[AVISO] Não foi possível buscar mensagem: {erro}"
+                )
+
+        arquivo = discord.File(
+            imagem_buffer,
+            filename="voidhelper_loja.jpg"
+        )
+
+        conteudo = (
+            "## 🛒 **FORTNITE ITEM SHOP**\n"
+            "### ✨ Loja atualizada\n"
+            f"**{len(itens)} itens disponíveis** • "
+            "Atualização automática\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "💜 **VOIDHELPER** • Loja Fortnite"
+        )
+
+        # ----------------------------------------------------
+        # Editar mensagem existente
+        # ----------------------------------------------------
+
+        if mensagem:
+
+            try:
+                await mensagem.edit(
+                    content=conteudo,
+                    attachments=[arquivo]
+                )
+
+                print(
+                    f"[LOJA] Mensagem {mensagem.id} atualizada."
+                )
+
+            except discord.HTTPException as erro:
+                print(
+                    f"[ERRO] Falha ao editar mensagem: {erro}"
+                )
+
+                return
+
+        # ----------------------------------------------------
+        # Criar mensagem nova
+        # ----------------------------------------------------
+
+        else:
+
+            try:
+                mensagem = await canal.send(
+                    content=conteudo,
+                    file=arquivo
+                )
+
+                print(
+                    f"[LOJA] Nova mensagem criada: {mensagem.id}"
+                )
+
+                estado["message_id"] = mensagem.id
+
+            except discord.HTTPException as erro:
+                print(
+                    f"[ERRO] Falha ao criar mensagem: {erro}"
+                )
+
+                return
+
+        # ----------------------------------------------------
+        # Salvar hash
+        # ----------------------------------------------------
+
+        estado["shop_hash"] = shop_hash
+        estado["updated_at"] = datetime.now(
+            FUSO_BRASIL
+        ).isoformat()
+
+        estado["items_count"] = len(itens)
+
+        salvar_estado(estado)
+
+    finally:
+        try:
+            imagem_buffer.close()
+        except Exception:
+            pass
+
+        del imagem_buffer
+
+        gc.collect()
+
+        print("[MEMÓRIA] Limpeza concluída.")
+
+
+# ============================================================
+# BOT
+# ============================================================
+
+
+intents = discord.Intents.default()
+
+intents.message_content = True
+intents.messages = True
+intents.guilds = True
+intents.reactions = True
+
+bot = commands.Bot(
+    command_prefix="!",
+    intents=intents
+)
+
+
+# ============================================================
+# EVENTO DE MENSAGEM
+# ============================================================
+
 
 @bot.event
 async def on_message(message):
@@ -1438,119 +1538,48 @@ async def on_message(message):
     if message.author.bot:
         return
 
+    # --------------------------------------------------------
+    # Sistema de reações
+    # --------------------------------------------------------
+
     if message.channel.id == CANAL_REACOES_ID:
 
         try:
-
             await message.add_reaction("🟢")
             await message.add_reaction("⚖️")
             await message.add_reaction("🔴")
 
         except discord.HTTPException as erro:
-
             print(
-                f"[REAÇÕES] Erro: {erro}"
+                f"[REAÇÕES] Erro ao reagir: {erro}"
             )
 
-    await bot.process_commands(
-        message
-    )
+    await bot.process_commands(message)
 
 
 # ============================================================
 # COMANDO DE TESTE
 # ============================================================
 
-@bot.command(
-    name="testeloja"
-)
-@commands.has_permissions(
-    administrator=True
-)
+
+@bot.command(name="testeloja")
+@commands.has_permissions(administrator=True)
 async def teste_loja(ctx):
 
     mensagem = await ctx.send(
-        "🔄 Gerando preview da loja..."
+        "⏳ **Gerando preview da nova loja...**"
     )
 
     try:
 
-        dados = await buscar_loja()
-
-        if not dados:
-
-            await mensagem.edit(
-                content=(
-                    "❌ Não consegui acessar "
-                    "a API da Fortnite."
-                )
-            )
-
-            return
-
-        data = dados.get(
-            "data",
-            {}
-        )
-
-        itens = extrair_itens(
-            dados
-        )
-
-        if not itens:
-
-            await mensagem.edit(
-                content=(
-                    "⚠️ A API respondeu, "
-                    "mas nenhum item válido "
-                    "foi encontrado."
-                )
-            )
-
-            return
-
-        print(
-            f"[TESTE] "
-            f"Gerando {len(itens)} itens..."
-        )
-
-        caminho = await gerar_imagem_loja(
-            itens,
-            data.get("date")
-        )
-
-        if not caminho:
-
-            await mensagem.edit(
-                content=(
-                    "❌ Não foi possível "
-                    "gerar a imagem."
-                )
-            )
-
-            return
-
-        arquivo = discord.File(
-            caminho,
-            filename="fortnite-shop.jpg"
-        )
+        await atualizar_loja(forcar=True)
 
         await mensagem.edit(
             content=(
-                "🎮 **PREVIEW DA ITEM SHOP**\n"
-                f"🔥 {len(itens)} itens encontrados."
-            ),
-            attachments=[
-                arquivo
-            ]
+                "✅ **Preview da loja gerado!**\n"
+                "A mensagem da loja foi atualizada."
+            )
         )
-
-        try:
-            os.remove(caminho)
-        except Exception:
-            pass
-
-        gc.collect()
 
     except Exception as erro:
 
@@ -1560,91 +1589,132 @@ async def teste_loja(ctx):
 
         await mensagem.edit(
             content=(
-                "❌ Erro durante o teste:\n"
+                "❌ **Erro ao gerar a loja.**\n"
                 f"`{erro}`"
             )
         )
 
 
-# ============================================================
-# ERRO DE PERMISSÃO
-# ============================================================
-
 @teste_loja.error
-async def teste_loja_error(
-    ctx,
-    erro
-):
+async def teste_loja_error(ctx, erro):
 
     if isinstance(
         erro,
         commands.MissingPermissions
     ):
-
         await ctx.send(
-            "❌ Você precisa ser administrador "
-            "para usar esse comando."
+            "❌ Você precisa ser administrador para usar esse comando.",
+            delete_after=8
         )
 
 
 # ============================================================
-# BOT ONLINE
+# TAREFA AUTOMÁTICA
 # ============================================================
+
+
+@tasks.loop(seconds=INTERVALO_VERIFICACAO)
+async def verificar_loja():
+
+    try:
+        await atualizar_loja()
+
+    except Exception as erro:
+
+        print(
+            f"[LOOP] Erro inesperado: {erro}"
+        )
+
+        gc.collect()
+
+
+@verificar_loja.before_loop
+async def antes_verificar_loja():
+
+    await bot.wait_until_ready()
+
+    print(
+        "[LOJA] Sistema automático iniciado."
+    )
+
+
+# ============================================================
+# READY
+# ============================================================
+
 
 @bot.event
 async def on_ready():
 
+    print("=" * 60)
+
     print(
-        "======================================"
+        f"[BOT] Logado como "
+        f"{bot.user} "
+        f"(ID: {bot.user.id})"
     )
 
     print(
-        f"🤖 Bot conectado: {bot.user}"
+        f"[BOT] Servidores: "
+        f"{len(bot.guilds)}"
     )
 
     print(
-        f"🆔 ID: {bot.user.id}"
+        "[BOT] VoidHelper online."
     )
 
-    print(
-        "🎮 Fortnite Shop: ONLINE"
-    )
+    print("=" * 60)
 
-    print(
-        "🟢 Sistema de reações: ONLINE"
-    )
+    if not verificar_loja.is_running():
 
-    print(
-        "💾 Modo econômico de memória: ONLINE"
-    )
+        verificar_loja.start()
 
-    print(
-        "======================================"
-    )
-
-    if (
-        not hasattr(
-            bot,
-            "loja_task"
+        print(
+            "[LOJA] Loop de verificação iniciado."
         )
-        or bot.loja_task.done()
+
+
+# ============================================================
+# TRATAMENTO DE ERROS
+# ============================================================
+
+
+@bot.event
+async def on_command_error(ctx, erro):
+
+    if isinstance(
+        erro,
+        commands.CommandNotFound
     ):
+        return
 
-        bot.loja_task = asyncio.create_task(
-            atualizar_loja()
+    if isinstance(
+        erro,
+        commands.MissingPermissions
+    ):
+        await ctx.send(
+            "❌ Você não possui permissão para usar esse comando.",
+            delete_after=8
         )
+        return
+
+    print(
+        f"[COMANDO] Erro: {erro}"
+    )
 
 
 # ============================================================
-# INICIAR
+# INICIALIZAÇÃO
 # ============================================================
+
 
 if not TOKEN:
 
     raise RuntimeError(
-        "A variável DISCORD_TOKEN "
-        "não foi encontrada."
+        "A variável de ambiente DISCORD_TOKEN não foi encontrada."
     )
 
+
+print("[SISTEMA] Iniciando VoidHelper...")
 
 bot.run(TOKEN)
