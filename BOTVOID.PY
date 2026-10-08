@@ -12,7 +12,7 @@ import sqlite3
 import asyncio
 import hashlib
 from collections import defaultdict, deque
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 import aiohttp
 import discord
@@ -26,11 +26,18 @@ from discord import app_commands
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 
-# Canal antigo de reações
-CANAL_REACOES_ID = 1556998399461691443
+# ============================================================
+# SERVIDOR OFICIAL DO VOIDHELPER
+# O bot permanece exclusivamente neste servidor.
+# ============================================================
+
+TARGET_GUILD_ID = 1557503868424818829
+
+# Canal de reações
+CANAL_REACOES_ID = 1557581489795760250
 
 # Canal da loja Fortnite
-CANAL_LOJA_ID = 1214658145243234324
+CANAL_LOJA_ID = 1557581362771263648
 
 # API Fortnite
 FORTNITE_SHOP_URL = "https://fortnite-api.com/v2/shop"
@@ -114,6 +121,14 @@ class VoidHelper(commands.Bot):
         # Evita iniciar tarefas duas vezes
         self.tasks_started = False
 
+    async def interaction_check(self, interaction: discord.Interaction):
+
+        # Impede comandos Slash fora do servidor oficial.
+        if not interaction.guild:
+            return False
+
+        return interaction.guild.id == TARGET_GUILD_ID
+
     async def setup_hook(self):
 
         # Banco
@@ -126,6 +141,7 @@ class VoidHelper(commands.Bot):
         self.db.execute("PRAGMA synchronous=NORMAL")
 
         criar_banco(self.db)
+        limpar_dados_outros_servidores()
 
         # HTTP
         timeout = aiohttp.ClientTimeout(total=15)
@@ -223,6 +239,26 @@ def criar_banco(db):
     """)
 
     db.commit()
+
+
+def limpar_dados_outros_servidores():
+
+    """Remove do banco configurações e dados de servidores antigos."""
+
+    cursor = bot.db.cursor()
+
+    # O VoidHelper agora pertence exclusivamente ao servidor oficial.
+    for tabela in ("guild_config", "warnings", "reaction_roles", "tickets"):
+        cursor.execute(
+            f"DELETE FROM {tabela} WHERE guild_id != ?",
+            (TARGET_GUILD_ID,)
+        )
+
+    # A mensagem antiga da loja pode pertencer a outro canal/servidor.
+    # O estado será reconstruído quando a loja for atualizada.
+    cursor.execute("DELETE FROM shop_state WHERE id = 1")
+
+    bot.db.commit()
 
 
 def garantir_config(guild_id):
@@ -420,6 +456,9 @@ async def enviar_log(guild, titulo, descricao, cor=COR_INFO):
 @bot.event
 async def on_member_join(member):
 
+    if member.guild.id != TARGET_GUILD_ID:
+        return
+
     config = obter_config(member.guild.id)
 
     # Autorole
@@ -491,6 +530,9 @@ async def on_member_join(member):
 @bot.event
 async def on_member_remove(member):
 
+    if member.guild.id != TARGET_GUILD_ID:
+        return
+
     config = obter_config(member.guild.id)
 
     if not config["welcome_enabled"]:
@@ -538,6 +580,10 @@ async def on_message(message):
 
     if not message.guild:
         await bot.process_commands(message)
+        return
+
+    # Ignora qualquer servidor que não seja o servidor oficial.
+    if message.guild.id != TARGET_GUILD_ID:
         return
 
     config = obter_config(message.guild.id)
@@ -630,22 +676,11 @@ async def on_message(message):
 
                 try:
                     await message.author.timeout(
-                        discord.utils.utcnow()
-                        + discord.timedelta(seconds=30),
+                        timedelta(seconds=30),
                         reason="VoidHelper - Anti-Spam"
                     )
                 except Exception:
-                    # Compatibilidade com versões onde discord.timedelta
-                    # não existe
-                    try:
-                        from datetime import timedelta
-
-                        await message.author.timeout(
-                            timedelta(seconds=30),
-                            reason="VoidHelper - Anti-Spam"
-                        )
-                    except Exception:
-                        pass
+                    pass
 
                 historico.clear()
 
@@ -768,9 +803,8 @@ async def serverinfo(interaction):
         color=COR_PRINCIPAL
     )
 
-    embed.set_thumbnail(
-        url=guild.icon.url if guild.icon else discord.Embed.Empty
-    )
+    if guild.icon:
+        embed.set_thumbnail(url=guild.icon.url)
 
     embed.add_field(
         name="👥 Membros",
@@ -1059,8 +1093,6 @@ async def timeout(
         )
 
     try:
-
-        from datetime import timedelta
 
         await usuario.timeout(
             timedelta(minutes=minutos),
@@ -2355,15 +2387,28 @@ async def gerar_imagem_loja(itens):
         fill=(20, 20, 35)
     )
 
-    fonte_titulo = ImageFont.truetype(
-        "DejaVuSans-Bold.ttf",
-        46
-    )
-
-    fonte_sub = ImageFont.truetype(
-        "DejaVuSans.ttf",
-        20
-    )
+    try:
+        fonte_titulo = ImageFont.truetype(
+            "DejaVuSans-Bold.ttf",
+            46
+        )
+        fonte_sub = ImageFont.truetype(
+            "DejaVuSans.ttf",
+            20
+        )
+        fonte_bold_13 = ImageFont.truetype(
+            "DejaVuSans-Bold.ttf",
+            13
+        )
+        fonte_bold_15 = ImageFont.truetype(
+            "DejaVuSans-Bold.ttf",
+            15
+        )
+    except OSError:
+        fonte_titulo = ImageFont.load_default(size=46)
+        fonte_sub = ImageFont.load_default(size=20)
+        fonte_bold_13 = ImageFont.load_default(size=13)
+        fonte_bold_15 = ImageFont.load_default(size=15)
 
     draw.text(
         (40, 28),
@@ -2464,10 +2509,7 @@ async def gerar_imagem_loja(itens):
             fill=rarity_color
         )
 
-        fonte_raridade = ImageFont.truetype(
-            "DejaVuSans-Bold.ttf",
-            13
-        )
+        fonte_raridade = fonte_bold_13
 
         draw.text(
             (x + 20, y + 200),
@@ -2476,10 +2518,7 @@ async def gerar_imagem_loja(itens):
             fill=(255, 255, 255)
         )
 
-        fonte_nome = ImageFont.truetype(
-            "DejaVuSans-Bold.ttf",
-            15
-        )
+        fonte_nome = fonte_bold_15
 
         nome = str(item["name"])
 
@@ -2493,14 +2532,11 @@ async def gerar_imagem_loja(itens):
             fill=(255, 255, 255)
         )
 
-        fonte_preco = ImageFont.truetype(
-            "DejaVuSans-Bold.ttf",
-            15
-        )
+        fonte_preco = fonte_bold_15
 
         draw.text(
             (x + 12, y + 255),
-            f"🪙 {item['price']} V-Bucks",
+            f"VB {item['price']} V-Bucks",
             font=fonte_preco,
             fill=(255, 220, 80)
         )
@@ -2919,7 +2955,24 @@ async def on_ready():
 
     print(f"Bot: {bot.user}")
     print(f"ID: {bot.user.id}")
-    print(f"Servidores: {len(bot.guilds)}")
+    # Desconecta automaticamente qualquer servidor antigo.
+    for guild in list(bot.guilds):
+
+        if guild.id != TARGET_GUILD_ID:
+            try:
+                print(f"[VOID] Saindo do servidor antigo: {guild.name} ({guild.id})")
+                await guild.leave()
+            except Exception as e:
+                print(f"[VOID] Não foi possível sair de {guild.id}: {e}")
+
+    servidor_atual = bot.get_guild(TARGET_GUILD_ID)
+
+    if servidor_atual:
+        print(f"Servidor oficial: {servidor_atual.name} ({servidor_atual.id})")
+    else:
+        print(f"[AVISO] Servidor oficial {TARGET_GUILD_ID} não está disponível.")
+
+    print(f"Servidores conectados: {len(bot.guilds)}")
     print(f"RAM: modo otimizado")
     print("=" * 50)
 
