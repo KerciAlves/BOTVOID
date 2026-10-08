@@ -1,15 +1,23 @@
+# ============================================================
+# VOIDHELPER - BOT DISCORD
+# Versão otimizada para hospedagem de baixo consumo
+# ============================================================
+
 import os
 import io
-import json
+import re
 import gc
+import time
+import sqlite3
 import asyncio
-from datetime import datetime
-from zoneinfo import ZoneInfo
+import hashlib
+from collections import defaultdict, deque
+from datetime import datetime, timezone
 
 import aiohttp
 import discord
 from discord.ext import commands, tasks
-from PIL import Image, ImageDraw, ImageFont, ImageFilter
+from discord import app_commands
 
 
 # ============================================================
@@ -18,1518 +26,508 @@ from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 
+# Canal antigo de reações
 CANAL_REACOES_ID = 1556998399461691443
+
+# Canal da loja Fortnite
 CANAL_LOJA_ID = 1214658145243234324
 
+# API Fortnite
 FORTNITE_SHOP_URL = "https://fortnite-api.com/v2/shop"
+
+# Idioma
 IDIOMA = "pt-BR"
 
+# Intervalo da loja
 INTERVALO_VERIFICACAO = 300
 
-SHOP_STATE_FILE = "shop_state.json"
+# Banco
+DATABASE_FILE = "voidhelper.db"
 
-FUSO_BRASIL = ZoneInfo("America/Sao_Paulo")
+# Estado da loja
+SHOP_STATE_FILE = "shop_state.db"
 
-# Segurança de memória
+# Limites
 MAX_IMAGE_BYTES = 700_000
 MAX_ITENS = 40
 
-# Tamanho da imagem final
-IMAGEM_LARGURA = 1200
+# Cores
+COR_PRINCIPAL = 0x5865F2
+COR_SUCESSO = 0x57F287
+COR_ERRO = 0xED4245
+COR_AVISO = 0xFEE75C
+COR_INFO = 0x3498DB
+COR_DARK = 0x111318
+COR_FORTNITE = 0x7B61FF
 
-# ============================================================
-# CORES
-# ============================================================
+# Antispam
+SPAM_MAX_MENSAGENS = 6
+SPAM_JANELA = 8
 
-FUNDO = (8, 10, 22)
-FUNDO_2 = (13, 16, 34)
-
-BRANCO = (245, 248, 255)
-CINZA = (160, 166, 185)
-CINZA_ESCURO = (70, 75, 95)
-
-AZUL = (63, 155, 255)
-AZUL_CLARO = (83, 213, 255)
-
-ROXO = (155, 82, 255)
-ROXO_CLARO = (193, 111, 255)
-
-ROSA = (255, 76, 180)
-
-LARANJA = (255, 145, 45)
-AMARELO = (255, 205, 72)
-
-VERDE = (65, 215, 130)
-
-# ============================================================
-# FONTES
-# ============================================================
-
-
-def carregar_fonte(tamanho, negrito=False):
-    caminhos = []
-
-    if os.name == "nt":
-        if negrito:
-            caminhos.extend([
-                "C:/Windows/Fonts/arialbd.ttf",
-                "C:/Windows/Fonts/segoeuib.ttf",
-            ])
-        else:
-            caminhos.extend([
-                "C:/Windows/Fonts/arial.ttf",
-                "C:/Windows/Fonts/segoeui.ttf",
-            ])
-    else:
-        if negrito:
-            caminhos.extend([
-                "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-                "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf",
-            ])
-        else:
-            caminhos.extend([
-                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-                "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
-            ])
-
-    for caminho in caminhos:
-        try:
-            return ImageFont.truetype(caminho, tamanho)
-        except Exception:
-            continue
-
-    return ImageFont.load_default()
-
-
-FONTE_TITULO = carregar_fonte(48, True)
-FONTE_SUBTITULO = carregar_fonte(20, True)
-FONTE_SECAO = carregar_fonte(28, True)
-FONTE_ITEM = carregar_fonte(20, True)
-FONTE_CATEGORIA = carregar_fonte(14, True)
-FONTE_PRECO = carregar_fonte(21, True)
-FONTE_RARIDADE = carregar_fonte(12, True)
-FONTE_PEQUENA = carregar_fonte(13, False)
-FONTE_PEQUENA_NEGRITO = carregar_fonte(13, True)
-FONTE_DATA = carregar_fonte(16, True)
-FONTE_VOID = carregar_fonte(18, True)
+# Links permitidos no anti-link
+LINKS_PERMITIDOS = (
+    "discord.com",
+    "discord.gg",
+    "discordapp.com",
+    "youtube.com",
+    "youtu.be",
+    "github.com",
+)
 
 
 # ============================================================
-# RARIDADES
+# INTENTS
 # ============================================================
 
-
-def cor_raridade(raridade):
-    if not raridade:
-        return CINZA
-
-    r = str(raridade).lower()
-
-    if "lend" in r or "legend" in r:
-        return LARANJA
-
-    if "épico" in r or "epic" in r:
-        return ROXO
-
-    if "raro" in r or "rare" in r:
-        return AZUL
-
-    if "incomum" in r or "uncommon" in r:
-        return VERDE
-
-    if "mítico" in r or "mythic" in r:
-        return AMARELO
-
-    if "icon" in r:
-        return AMARELO
-
-    return CINZA
-
-
-def nome_raridade(item):
-    raridade = item.get("rarity")
-
-    if isinstance(raridade, dict):
-        return (
-            raridade.get("displayValue")
-            or raridade.get("displayName")
-            or raridade.get("value")
-            or "COMUM"
-        )
-
-    if isinstance(raridade, str):
-        return raridade
-
-    return "COMUM"
-
-
-# ============================================================
-# ESTADO DA LOJA
-# ============================================================
-
-
-def carregar_estado():
-    try:
-        if not os.path.exists(SHOP_STATE_FILE):
-            return {}
-
-        with open(SHOP_STATE_FILE, "r", encoding="utf-8") as arquivo:
-            return json.load(arquivo)
-
-    except Exception as erro:
-        print(f"[AVISO] Não foi possível carregar estado: {erro}")
-        return {}
-
-
-def salvar_estado(estado):
-    try:
-        with open(SHOP_STATE_FILE, "w", encoding="utf-8") as arquivo:
-            json.dump(
-                estado,
-                arquivo,
-                ensure_ascii=False,
-                indent=2
-            )
-    except Exception as erro:
-        print(f"[ERRO] Não foi possível salvar estado: {erro}")
-
-
-# ============================================================
-# TEXTO
-# ============================================================
-
-
-def texto_seguro(texto):
-    if texto is None:
-        return ""
-
-    return str(texto).strip()
-
-
-def cortar_texto(texto, limite):
-    texto = texto_seguro(texto)
-
-    if len(texto) <= limite:
-        return texto
-
-    return texto[:limite - 3] + "..."
-
-
-def centralizar_texto(draw, texto, y, fonte, largura, fill):
-    caixa = draw.textbbox((0, 0), texto, font=fonte)
-    largura_texto = caixa[2] - caixa[0]
-
-    x = (largura - largura_texto) // 2
-
-    draw.text(
-        (x, y),
-        texto,
-        font=fonte,
-        fill=fill
-    )
-
-
-# ============================================================
-# API
-# ============================================================
-
-
-async def buscar_loja():
-    timeout = aiohttp.ClientTimeout(total=25)
-
-    headers = {
-        "User-Agent": "VoidHelper/1.0"
-    }
-
-    params = {
-        "language": IDIOMA
-    }
-
-    try:
-        async with aiohttp.ClientSession(
-            timeout=timeout,
-            headers=headers
-        ) as sessao:
-
-            async with sessao.get(
-                FORTNITE_SHOP_URL,
-                params=params
-            ) as resposta:
-
-                if resposta.status != 200:
-                    print(
-                        f"[ERRO] Fortnite API respondeu HTTP {resposta.status}"
-                    )
-                    return None
-
-                return await resposta.json()
-
-    except asyncio.TimeoutError:
-        print("[ERRO] Timeout ao consultar Fortnite API.")
-        return None
-
-    except Exception as erro:
-        print(f"[ERRO] Falha na API: {erro}")
-        return None
-
-
-# ============================================================
-# EXTRAÇÃO DOS ITENS
-# ============================================================
-
-
-def extrair_itens(dados):
-    try:
-        entries = dados.get("data", {}).get("entries", [])
-
-        if not isinstance(entries, list):
-            return []
-
-    except Exception:
-        return []
-
-    agora = datetime.now(FUSO_BRASIL)
-
-    resultado = []
-    ids_processados = set()
-
-    for entry in entries:
-
-        if not isinstance(entry, dict):
-            continue
-
-        # ----------------------------------------------------
-        # Verifica validade temporal da oferta
-        # ----------------------------------------------------
-
-        in_date = entry.get("inDate")
-        out_date = entry.get("outDate")
-
-        try:
-            if in_date:
-                entrada = datetime.fromisoformat(
-                    in_date.replace("Z", "+00:00")
-                )
-
-                if entrada.tzinfo is None:
-                    entrada = entrada.replace(tzinfo=FUSO_BRASIL)
-
-                if agora.astimezone(entrada.tzinfo) < entrada:
-                    continue
-
-        except Exception:
-            pass
-
-        try:
-            if out_date:
-                saida = datetime.fromisoformat(
-                    out_date.replace("Z", "+00:00")
-                )
-
-                if saida.tzinfo is None:
-                    saida = saida.replace(tzinfo=FUSO_BRASIL)
-
-                if agora.astimezone(saida.tzinfo) > saida:
-                    continue
-
-        except Exception:
-            pass
-
-        itens_br = entry.get("brItems") or []
-
-        if not itens_br:
-            itens_br = entry.get("items") or []
-
-        if not isinstance(itens_br, list):
-            continue
-
-        for item in itens_br:
-
-            if not isinstance(item, dict):
-                continue
-
-            item_id = (
-                item.get("id")
-                or item.get("offerId")
-                or entry.get("offerId")
-            )
-
-            if not item_id:
-                continue
-
-            if item_id in ids_processados:
-                continue
-
-            ids_processados.add(item_id)
-
-            # ------------------------------------------------
-            # Nome
-            # ------------------------------------------------
-
-            nome = (
-                item.get("name")
-                or item.get("displayName")
-                or "Item desconhecido"
-            )
-
-            # ------------------------------------------------
-            # Categoria
-            # ------------------------------------------------
-
-            tipo = item.get("type")
-
-            if isinstance(tipo, dict):
-                categoria = (
-                    tipo.get("displayValue")
-                    or tipo.get("displayName")
-                    or tipo.get("value")
-                    or "ITEM"
-                )
-            else:
-                categoria = tipo or "ITEM"
-
-            # ------------------------------------------------
-            # Raridade
-            # ------------------------------------------------
-
-            raridade = nome_raridade(item)
-
-            # ------------------------------------------------
-            # Imagem
-            # ------------------------------------------------
-
-            imagens = item.get("images") or {}
-
-            imagem_url = (
-                imagens.get("featured")
-                or imagens.get("icon")
-                or imagens.get("smallIcon")
-                or imagens.get("small")
-            )
-
-            if not imagem_url:
-                continue
-
-            # ------------------------------------------------
-            # Preço
-            # ------------------------------------------------
-
-            preco = (
-                entry.get("finalPrice")
-                or entry.get("regularPrice")
-                or item.get("finalPrice")
-                or item.get("regularPrice")
-                or 0
-            )
-
-            resultado.append({
-                "id": str(item_id),
-                "name": texto_seguro(nome),
-                "category": texto_seguro(categoria),
-                "rarity": texto_seguro(raridade),
-                "price": preco,
-                "image": imagem_url,
-            })
-
-            if len(resultado) >= MAX_ITENS:
-                return resultado
-
-    return resultado
-
-
-# ============================================================
-# DOWNLOAD DE IMAGEM
-# ============================================================
-
-
-async def baixar_imagem(sessao, url):
-    if not url:
-        return None
-
-    try:
-        async with sessao.get(url) as resposta:
-
-            if resposta.status != 200:
-                return None
-
-            content_length = resposta.headers.get("Content-Length")
-
-            if content_length:
-                try:
-                    if int(content_length) > MAX_IMAGE_BYTES:
-                        return None
-                except Exception:
-                    pass
-
-            dados = await resposta.read()
-
-            if len(dados) > MAX_IMAGE_BYTES:
-                return None
-
-            imagem = Image.open(io.BytesIO(dados))
-
-            # Converte para RGBA apenas localmente.
-            if imagem.mode not in ("RGB", "RGBA"):
-                imagem = imagem.convert("RGBA")
-
-            imagem.thumbnail(
-                (250, 210),
-                Image.Resampling.LANCZOS
-            )
-
-            return imagem
-
-    except Exception as erro:
-        print(f"[AVISO] Erro ao baixar imagem: {erro}")
-        return None
-
-
-# ============================================================
-# FUNDO
-# ============================================================
-
-
-def criar_fundo(largura, altura):
-    imagem = Image.new(
-        "RGB",
-        (largura, altura),
-        FUNDO
-    )
-
-    draw = ImageDraw.Draw(imagem)
-
-    # Fundo em faixas horizontais
-    passo = 70
-
-    for y in range(0, altura, passo):
-        if (y // passo) % 2 == 0:
-            draw.rectangle(
-                (0, y, largura, y + passo),
-                fill=FUNDO_2
-            )
-
-    # Linhas diagonais leves
-    for x in range(-altura, largura, 160):
-        draw.line(
-            (x, 0, x + altura, altura),
-            fill=(20, 24, 48),
-            width=2
-        )
-
-    # Linha superior
-    draw.rectangle(
-        (0, 0, largura, 5),
-        fill=ROXO
-    )
-
-    draw.rectangle(
-        (largura // 2, 0, largura, 5),
-        fill=AZUL_CLARO
-    )
-
-    # Pequenos pontos decorativos
-    pontos = [
-        (80, 110),
-        (240, 180),
-        (440, 100),
-        (680, 160),
-        (900, 90),
-        (1100, 180),
-        (1020, 460),
-        (130, 700),
-        (760, 620),
-        (1080, 800),
-    ]
-
-    for x, y in pontos:
-        if y < altura:
-            draw.ellipse(
-                (x, y, x + 3, y + 3),
-                fill=(80, 90, 150)
-            )
-
-    return imagem
-
-
-# ============================================================
-# CABEÇALHO
-# ============================================================
-
-
-def desenhar_cabecalho(imagem, draw, altura):
-    largura = imagem.width
-
-    # Área do header
-    draw.rounded_rectangle(
-        (30, 30, largura - 30, 190),
-        radius=24,
-        fill=(14, 17, 38),
-        outline=(40, 46, 78),
-        width=2
-    )
-
-    # Faixa decorativa
-    draw.rounded_rectangle(
-        (30, 30, 420, 36),
-        radius=3,
-        fill=ROXO
-    )
-
-    draw.rounded_rectangle(
-        (420, 30, 680, 36),
-        radius=3,
-        fill=AZUL
-    )
-
-    draw.rounded_rectangle(
-        (680, 30, 850, 36),
-        radius=3,
-        fill=ROSA
-    )
-
-    # --------------------------------------------------------
-    # Título
-    # --------------------------------------------------------
-
-    draw.text(
-        (60, 55),
-        "FORTNITE",
-        font=FONTE_TITULO,
-        fill=BRANCO
-    )
-
-    draw.text(
-        (63, 108),
-        "ITEM SHOP",
-        font=FONTE_SUBTITULO,
-        fill=AZUL_CLARO
-    )
-
-    draw.text(
-        (63, 137),
-        "OS MELHORES ITENS, SEMPRE!",
-        font=FONTE_PEQUENA_NEGRITO,
-        fill=(170, 176, 205)
-    )
-
-    # --------------------------------------------------------
-    # Painel de atualização
-    # --------------------------------------------------------
-
-    painel_x = 700
-    painel_y = 52
-    painel_w = 220
-    painel_h = 105
-
-    draw.rounded_rectangle(
-        (
-            painel_x,
-            painel_y,
-            painel_x + painel_w,
-            painel_y + painel_h
-        ),
-        radius=16,
-        fill=(20, 24, 48),
-        outline=(52, 61, 100),
-        width=2
-    )
-
-    draw.text(
-        (painel_x + 18, painel_y + 12),
-        "LOJA ATUALIZADA EM",
-        font=FONTE_PEQUENA_NEGRITO,
-        fill=(135, 145, 180)
-    )
-
-    agora = datetime.now(FUSO_BRASIL)
-
-    data = agora.strftime("%d/%m/%Y")
-    horario = agora.strftime("%H:%M")
-
-    draw.text(
-        (painel_x + 18, painel_y + 36),
-        data,
-        font=FONTE_DATA,
-        fill=BRANCO
-    )
-
-    draw.text(
-        (painel_x + 18, painel_y + 62),
-        f"{horario} BRT",
-        font=FONTE_PEQUENA_NEGRITO,
-        fill=AZUL_CLARO
-    )
-
-    # --------------------------------------------------------
-    # Painel V-Bucks
-    # --------------------------------------------------------
-
-    vb_x = 945
-    vb_y = 52
-
-    draw.rounded_rectangle(
-        (vb_x, vb_y, largura - 60, vb_y + 105),
-        radius=16,
-        fill=(20, 24, 48),
-        outline=(52, 61, 100),
-        width=2
-    )
-
-    # Ícone V-Bucks estilizado
-    cx = vb_x + 38
-    cy = vb_y + 52
-
-    draw.ellipse(
-        (cx - 20, cy - 20, cx + 20, cy + 20),
-        fill=(82, 202, 255),
-        outline=(170, 240, 255),
-        width=2
-    )
-
-    draw.text(
-        (cx - 7, cy - 13),
-        "V",
-        font=FONTE_ITEM,
-        fill=(10, 35, 60)
-    )
-
-    draw.text(
-        (vb_x + 68, vb_y + 20),
-        "V-BUCKS",
-        font=FONTE_PEQUENA_NEGRITO,
-        fill=AZUL_CLARO
-    )
-
-    draw.text(
-        (vb_x + 68, vb_y + 45),
-        "USE SEUS V-BUCKS",
-        font=FONTE_PEQUENA_NEGRITO,
-        fill=BRANCO
-    )
-
-    draw.text(
-        (vb_x + 68, vb_y + 67),
-        "PARA GARANTIR SEUS ITENS",
-        font=carregar_fonte(10, False),
-        fill=(135, 145, 180)
-    )
-
-
-# ============================================================
-# NAVEGAÇÃO
-# ============================================================
-
-
-def desenhar_navegacao(draw, y):
-    largura = IMAGEM_LARGURA
-
-    abas = [
-        ("★", "DESTAQUES"),
-        ("◈", "DIÁRIO"),
-        ("◆", "SKINS"),
-        ("⚒", "PICARETAS"),
-        ("◇", "ASA-DELTA"),
-        ("●", "GESTOS"),
-        ("♪", "MÚSICAS"),
-    ]
-
-    x = 35
-
-    for indice, (icone, nome) in enumerate(abas):
-
-        largura_aba = 150
-
-        if indice == 0:
-            fill = (79, 45, 150)
-            outline = ROXO_CLARO
-        else:
-            fill = (17, 21, 42)
-            outline = (42, 48, 75)
-
-        draw.rounded_rectangle(
-            (x, y, x + largura_aba, y + 42),
-            radius=12,
-            fill=fill,
-            outline=outline,
-            width=1
-        )
-
-        draw.text(
-            (x + 12, y + 11),
-            icone,
-            font=FONTE_PEQUENA_NEGRITO,
-            fill=BRANCO
-        )
-
-        draw.text(
-            (x + 34, y + 12),
-            nome,
-            font=carregar_fonte(11, True),
-            fill=BRANCO
-        )
-
-        x += largura_aba + 8
-
-        if x > largura - 170:
-            break
-
-
-# ============================================================
-# CARD DE ITEM
-# ============================================================
-
-
-def desenhar_card(
-    imagem,
-    draw,
-    item,
-    x,
-    y,
-    largura,
-    altura,
-    imagem_item
-):
-    raridade = item.get("rarity", "COMUM")
-    cor = cor_raridade(raridade)
-
-    # --------------------------------------------------------
-    # Card
-    # --------------------------------------------------------
-
-    draw.rounded_rectangle(
-        (x, y, x + largura, y + altura),
-        radius=18,
-        fill=(16, 19, 38),
-        outline=(42, 48, 76),
-        width=2
-    )
-
-    # Linha de raridade
-    draw.rounded_rectangle(
-        (x + 1, y + 1, x + largura - 1, y + 10),
-        radius=6,
-        fill=cor
-    )
-
-    # --------------------------------------------------------
-    # Label raridade
-    # --------------------------------------------------------
-
-    label = raridade.upper()
-
-    draw.rounded_rectangle(
-        (x + 12, y + 18, x + 105, y + 42),
-        radius=8,
-        fill=cor
-    )
-
-    draw.text(
-        (x + 19, y + 24),
-        label,
-        font=FONTE_RARIDADE,
-        fill=(10, 12, 20)
-    )
-
-    # --------------------------------------------------------
-    # Área da imagem
-    # --------------------------------------------------------
-
-    area_top = y + 48
-    area_bottom = y + altura - 92
-
-    area_x1 = x + 10
-    area_x2 = x + largura - 10
-
-    draw.rounded_rectangle(
-        (
-            area_x1,
-            area_top,
-            area_x2,
-            area_bottom
-        ),
-        radius=13,
-        fill=(10, 13, 28)
-    )
-
-    # Pequeno brilho superior
-    draw.line(
-        (
-            area_x1 + 12,
-            area_top + 2,
-            area_x2 - 12,
-            area_top + 2
-        ),
-        fill=cor,
-        width=2
-    )
-
-    # --------------------------------------------------------
-    # Imagem do item
-    # --------------------------------------------------------
-
-    if imagem_item is not None:
-
-        try:
-            img = imagem_item.copy()
-
-            max_w = int(largura * 0.82)
-            max_h = int((area_bottom - area_top) * 0.82)
-
-            img.thumbnail(
-                (max_w, max_h),
-                Image.Resampling.LANCZOS
-            )
-
-            iw, ih = img.size
-
-            pos_x = x + (largura - iw) // 2
-            pos_y = area_top + (
-                (area_bottom - area_top - ih) // 2
-            )
-
-            if img.mode == "RGBA":
-                imagem.paste(
-                    img,
-                    (pos_x, pos_y),
-                    img
-                )
-            else:
-                imagem.paste(
-                    img,
-                    (pos_x, pos_y)
-                )
-
-            del img
-
-        except Exception as erro:
-            print(f"[AVISO] Erro renderizando item: {erro}")
-
-    # --------------------------------------------------------
-    # Nome
-    # --------------------------------------------------------
-
-    nome = cortar_texto(
-        item.get("name", "Item"),
-        24
-    )
-
-    categoria = cortar_texto(
-        item.get("category", "ITEM"),
-        20
-    )
-
-    nome_fonte = FONTE_ITEM
-
-    caixa = draw.textbbox(
-        (0, 0),
-        nome,
-        font=nome_fonte
-    )
-
-    nome_largura = caixa[2] - caixa[0]
-
-    if nome_largura > largura - 24:
-        nome_fonte = carregar_fonte(17, True)
-
-    draw.text(
-        (x + 12, y + altura - 78),
-        nome,
-        font=nome_fonte,
-        fill=BRANCO
-    )
-
-    # Categoria
-    draw.text(
-        (x + 12, y + altura - 51),
-        categoria.upper(),
-        font=FONTE_CATEGORIA,
-        fill=(125, 132, 160)
-    )
-
-    # --------------------------------------------------------
-    # Preço
-    # --------------------------------------------------------
-
-    preco = item.get("price", 0)
-
-    try:
-        preco_texto = f"{int(preco):,}".replace(",", ".")
-    except Exception:
-        preco_texto = str(preco)
-
-    # moeda V-Bucks
-    moeda_x = x + largura - 55
-    moeda_y = y + altura - 59
-
-    draw.ellipse(
-        (
-            moeda_x,
-            moeda_y,
-            moeda_x + 27,
-            moeda_y + 27
-        ),
-        fill=(82, 202, 255),
-        outline=(170, 240, 255),
-        width=1
-    )
-
-    draw.text(
-        (moeda_x + 8, moeda_y + 5),
-        "V",
-        font=carregar_fonte(12, True),
-        fill=(8, 35, 58)
-    )
-
-    draw.text(
-        (
-            moeda_x - 65,
-            moeda_y + 2
-        ),
-        preco_texto,
-        font=FONTE_PRECO,
-        fill=BRANCO
-    )
-
-
-# ============================================================
-# GERAR IMAGEM
-# ============================================================
-
-
-async def gerar_imagem_loja(itens):
-    if not itens:
-        print("[AVISO] Nenhum item para gerar.")
-        return None
-
-    # --------------------------------------------------------
-    # Layout
-    # --------------------------------------------------------
-
-    margem = 30
-    espacamento = 18
-
-    colunas = 4
-
-    largura_card = (
-        IMAGEM_LARGURA
-        - (margem * 2)
-        - (espacamento * (colunas - 1))
-    ) // colunas
-
-    altura_card = 330
-
-    header_altura = 190
-    nav_y = 205
-    nav_altura = 42
-
-    secao_y = 265
-
-    inicio_cards = 315
-
-    linhas = (
-        (len(itens) + colunas - 1)
-        // colunas
-    )
-
-    # Footer
-    footer_altura = 150
-
-    altura_total = (
-        inicio_cards
-        + (linhas * altura_card)
-        + ((linhas - 1) * espacamento)
-        + footer_altura
-        + 30
-    )
-
-    # --------------------------------------------------------
-    # Cria imagem
-    # --------------------------------------------------------
-
-    imagem = criar_fundo(
-        IMAGEM_LARGURA,
-        altura_total
-    )
-
-    draw = ImageDraw.Draw(imagem)
-
-    # --------------------------------------------------------
-    # Header
-    # --------------------------------------------------------
-
-    desenhar_cabecalho(
-        imagem,
-        draw,
-        altura_total
-    )
-
-    # --------------------------------------------------------
-    # Navegação
-    # --------------------------------------------------------
-
-    desenhar_navegacao(
-        draw,
-        nav_y
-    )
-
-    # --------------------------------------------------------
-    # Seção
-    # --------------------------------------------------------
-
-    draw.text(
-        (35, secao_y),
-        "★ DESTAQUES",
-        font=FONTE_SECAO,
-        fill=BRANCO
-    )
-
-    draw.text(
-        (760, secao_y + 8),
-        "ITENS DA LOJA HOJE",
-        font=FONTE_PEQUENA_NEGRITO,
-        fill=(120, 130, 165)
-    )
-
-    draw.line(
-        (35, secao_y + 43, IMAGEM_LARGURA - 35, secao_y + 43),
-        fill=(45, 50, 78),
-        width=1
-    )
-
-    # --------------------------------------------------------
-    # Sessão HTTP única
-    # --------------------------------------------------------
-
-    timeout = aiohttp.ClientTimeout(total=20)
-
-    headers = {
-        "User-Agent": "VoidHelper/1.0"
-    }
-
-    async with aiohttp.ClientSession(
-        timeout=timeout,
-        headers=headers
-    ) as sessao:
-
-        for indice, item in enumerate(itens):
-
-            linha = indice // colunas
-            coluna = indice % colunas
-
-            x = (
-                margem
-                + coluna * (largura_card + espacamento)
-            )
-
-            y = (
-                inicio_cards
-                + linha * (altura_card + espacamento)
-            )
-
-            imagem_item = None
-
-            try:
-                imagem_item = await baixar_imagem(
-                    sessao,
-                    item.get("image")
-                )
-
-                desenhar_card(
-                    imagem,
-                    draw,
-                    item,
-                    x,
-                    y,
-                    largura_card,
-                    altura_card,
-                    imagem_item
-                )
-
-            except Exception as erro:
-                print(
-                    f"[AVISO] Erro processando item "
-                    f"{item.get('name')}: {erro}"
-                )
-
-            finally:
-                if imagem_item is not None:
-                    try:
-                        imagem_item.close()
-                    except Exception:
-                        pass
-
-                    del imagem_item
-
-                gc.collect()
-
-    # --------------------------------------------------------
-    # Footer
-    # --------------------------------------------------------
-
-    footer_y = inicio_cards + (
-        linhas * altura_card
-    ) + (
-        (linhas - 1) * espacamento
-    ) + 25
-
-    footer_bottom = altura_total - 25
-
-    draw.rounded_rectangle(
-        (
-            30,
-            footer_y,
-            IMAGEM_LARGURA - 30,
-            footer_bottom
-        ),
-        radius=20,
-        fill=(14, 17, 37),
-        outline=(45, 50, 80),
-        width=2
-    )
-
-    # Discord
-    draw.ellipse(
-        (
-            55,
-            footer_y + 32,
-            105,
-            footer_y + 82
-        ),
-        fill=(88, 101, 242)
-    )
-
-    draw.text(
-        (70, footer_y + 43),
-        "D",
-        font=carregar_fonte(22, True),
-        fill=BRANCO
-    )
-
-    draw.text(
-        (125, footer_y + 25),
-        "FIQUE POR DENTRO!",
-        font=FONTE_VOID,
-        fill=BRANCO
-    )
-
-    draw.text(
-        (125, footer_y + 52),
-        "Entre no nosso servidor do Discord",
-        font=FONTE_PEQUENA,
-        fill=(150, 158, 185)
-    )
-
-    draw.text(
-        (125, footer_y + 74),
-        "e receba novidades em primeira mão!",
-        font=FONTE_PEQUENA,
-        fill=(150, 158, 185)
-    )
-
-    # Código
-    central_x = 600
-
-    draw.text(
-        (central_x, footer_y + 25),
-        "USE O CÓDIGO",
-        font=FONTE_PEQUENA_NEGRITO,
-        fill=ROXO_CLARO,
-        anchor="mm"
-    )
-
-    draw.text(
-        (central_x, footer_y + 53),
-        "VOIDHELPER",
-        font=carregar_fonte(25, True),
-        fill=BRANCO,
-        anchor="mm"
-    )
-
-    # Slogan
-    draw.text(
-        (965, footer_y + 30),
-        "Mais itens.",
-        font=FONTE_VOID,
-        fill=AZUL_CLARO,
-        anchor="mm"
-    )
-
-    draw.text(
-        (965, footer_y + 58),
-        "Mais diversão.",
-        font=FONTE_VOID,
-        fill=ROXO_CLARO,
-        anchor="mm"
-    )
-
-    draw.text(
-        (965, footer_y + 83),
-        "VOIDHELPER",
-        font=FONTE_PEQUENA_NEGRITO,
-        fill=(110, 118, 150),
-        anchor="mm"
-    )
-
-    # --------------------------------------------------------
-    # Salvar em memória
-    # --------------------------------------------------------
-
-    buffer = io.BytesIO()
-
-    imagem.save(
-        buffer,
-        format="JPEG",
-        quality=67,
-        optimize=True,
-        progressive=True
-    )
-
-    imagem.close()
-
-    buffer.seek(0)
-
-    tamanho = len(buffer.getvalue())
-
-    print(
-        f"[IMAGEM] Gerada: "
-        f"{tamanho / 1024:.1f} KB"
-    )
-
-    # --------------------------------------------------------
-    # Segurança de memória/arquivo
-    # --------------------------------------------------------
-
-    if tamanho > MAX_IMAGE_BYTES:
-        print(
-            "[AVISO] Imagem ultrapassou o limite. "
-            "Tentando compressão adicional."
-        )
-
-        buffer.seek(0)
-
-        imagem_temp = Image.open(buffer)
-
-        novo_buffer = io.BytesIO()
-
-        imagem_temp.save(
-            novo_buffer,
-            format="JPEG",
-            quality=52,
-            optimize=True,
-            progressive=True
-        )
-
-        imagem_temp.close()
-
-        buffer.close()
-
-        buffer = novo_buffer
-        buffer.seek(0)
-
-        print(
-            f"[IMAGEM] Após compressão: "
-            f"{len(buffer.getvalue()) / 1024:.1f} KB"
-        )
-
-    gc.collect()
-
-    return buffer
-
-
-# ============================================================
-# ATUALIZAR MENSAGEM DA LOJA
-# ============================================================
-
-
-async def atualizar_loja(forcar=False):
-    print("[LOJA] Verificando loja Fortnite...")
-
-    dados = await buscar_loja()
-
-    if not dados:
-        return
-
-    try:
-        data = dados.get("data", {})
-        shop_hash = data.get("hash")
-
-    except Exception:
-        print("[ERRO] Resposta inválida da API.")
-        return
-
-    if not shop_hash:
-        print("[ERRO] Hash da loja não encontrado.")
-        return
-
-    estado = carregar_estado()
-
-    hash_anterior = estado.get("shop_hash")
-
-    if not forcar and hash_anterior == shop_hash:
-        print("[LOJA] Nenhuma alteração detectada.")
-        return
-
-    print("[LOJA] Nova loja detectada.")
-
-    itens = extrair_itens(dados)
-
-    if not itens:
-        print("[LOJA] Nenhum item encontrado.")
-        return
-
-    print(
-        f"[LOJA] {len(itens)} itens encontrados."
-    )
-
-    imagem_buffer = await gerar_imagem_loja(itens)
-
-    if not imagem_buffer:
-        print("[ERRO] Não foi possível gerar imagem.")
-        return
-
-    try:
-        canal = bot.get_channel(CANAL_LOJA_ID)
-
-        if canal is None:
-            canal = await bot.fetch_channel(
-                CANAL_LOJA_ID
-            )
-
-        if canal is None:
-            print("[ERRO] Canal da loja não encontrado.")
-            return
-
-        # ----------------------------------------------------
-        # Recupera mensagem existente
-        # ----------------------------------------------------
-
-        message_id = estado.get("message_id")
-
-        mensagem = None
-
-        if message_id:
-            try:
-                mensagem = await canal.fetch_message(
-                    int(message_id)
-                )
-
-            except discord.NotFound:
-                mensagem = None
-
-            except discord.HTTPException as erro:
-                print(
-                    f"[AVISO] Não foi possível buscar mensagem: {erro}"
-                )
-
-        arquivo = discord.File(
-            imagem_buffer,
-            filename="voidhelper_loja.jpg"
-        )
-
-        conteudo = (
-            "## 🛒 **FORTNITE ITEM SHOP**\n"
-            "### ✨ Loja atualizada\n"
-            f"**{len(itens)} itens disponíveis** • "
-            "Atualização automática\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            "💜 **VOIDHELPER** • Loja Fortnite"
-        )
-
-        # ----------------------------------------------------
-        # Editar mensagem existente
-        # ----------------------------------------------------
-
-        if mensagem:
-
-            try:
-                await mensagem.edit(
-                    content=conteudo,
-                    attachments=[arquivo]
-                )
-
-                print(
-                    f"[LOJA] Mensagem {mensagem.id} atualizada."
-                )
-
-            except discord.HTTPException as erro:
-                print(
-                    f"[ERRO] Falha ao editar mensagem: {erro}"
-                )
-
-                return
-
-        # ----------------------------------------------------
-        # Criar mensagem nova
-        # ----------------------------------------------------
-
-        else:
-
-            try:
-                mensagem = await canal.send(
-                    content=conteudo,
-                    file=arquivo
-                )
-
-                print(
-                    f"[LOJA] Nova mensagem criada: {mensagem.id}"
-                )
-
-                estado["message_id"] = mensagem.id
-
-            except discord.HTTPException as erro:
-                print(
-                    f"[ERRO] Falha ao criar mensagem: {erro}"
-                )
-
-                return
-
-        # ----------------------------------------------------
-        # Salvar hash
-        # ----------------------------------------------------
-
-        estado["shop_hash"] = shop_hash
-        estado["updated_at"] = datetime.now(
-            FUSO_BRASIL
-        ).isoformat()
-
-        estado["items_count"] = len(itens)
-
-        salvar_estado(estado)
-
-    finally:
-        try:
-            imagem_buffer.close()
-        except Exception:
-            pass
-
-        del imagem_buffer
-
-        gc.collect()
-
-        print("[MEMÓRIA] Limpeza concluída.")
+intents = discord.Intents.default()
+intents.guilds = True
+intents.members = True
+intents.messages = True
+intents.message_content = True
+intents.reactions = True
 
 
 # ============================================================
 # BOT
 # ============================================================
 
+class VoidHelper(commands.Bot):
 
-intents = discord.Intents.default()
+    def __init__(self):
+        super().__init__(
+            command_prefix="!",
+            intents=intents,
+            help_command=None,
+            case_insensitive=True,
+            max_messages=100,
+        )
 
-intents.message_content = True
-intents.messages = True
-intents.guilds = True
-intents.reactions = True
+        self.db = None
+        self.http_session = None
 
-bot = commands.Bot(
-    command_prefix="!",
-    intents=intents
+        # Antispam limitado em memória
+        self.spam_cache = defaultdict(lambda: deque(maxlen=10))
+
+        # Controle de cooldown
+        self.command_cooldowns = {}
+
+        # Evita iniciar tarefas duas vezes
+        self.tasks_started = False
+
+    async def setup_hook(self):
+
+        # Banco
+        self.db = sqlite3.connect(
+            DATABASE_FILE,
+            check_same_thread=False
+        )
+
+        self.db.execute("PRAGMA journal_mode=WAL")
+        self.db.execute("PRAGMA synchronous=NORMAL")
+
+        criar_banco(self.db)
+
+        # HTTP
+        timeout = aiohttp.ClientTimeout(total=15)
+
+        self.http_session = aiohttp.ClientSession(
+            timeout=timeout,
+            connector=aiohttp.TCPConnector(
+                limit=4,
+                ttl_dns_cache=300
+            )
+        )
+
+        # Views persistentes
+        self.add_view(TicketView())
+        self.add_view(RoleView())
+
+        # Sincronizar Slash Commands
+        try:
+            synced = await self.tree.sync()
+            print(f"[VOID] {len(synced)} comandos Slash sincronizados.")
+        except Exception as e:
+            print(f"[ERRO] Falha ao sincronizar comandos: {e}")
+
+    async def close(self):
+
+        if self.http_session:
+            await self.http_session.close()
+
+        if self.db:
+            self.db.close()
+
+        await super().close()
+
+
+bot = VoidHelper()
+
+
+# ============================================================
+# BANCO DE DADOS
+# ============================================================
+
+def criar_banco(db):
+
+    cursor = db.cursor()
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS guild_config (
+            guild_id INTEGER PRIMARY KEY,
+            welcome_channel INTEGER,
+            welcome_enabled INTEGER DEFAULT 0,
+            autorole_id INTEGER,
+            log_channel INTEGER,
+            anti_link INTEGER DEFAULT 0,
+            anti_spam INTEGER DEFAULT 0,
+            ticket_category INTEGER,
+            ticket_enabled INTEGER DEFAULT 0,
+            welcome_message TEXT
+        )
+    """)
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS warnings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            guild_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            moderator_id INTEGER NOT NULL,
+            reason TEXT,
+            created_at INTEGER
+        )
+    """)
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS reaction_roles (
+            guild_id INTEGER NOT NULL,
+            message_id INTEGER PRIMARY KEY,
+            role_id INTEGER NOT NULL
+        )
+    """)
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS tickets (
+            guild_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            channel_id INTEGER PRIMARY KEY
+        )
+    """)
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS shop_state (
+            id INTEGER PRIMARY KEY CHECK(id = 1),
+            shop_hash TEXT,
+            message_id INTEGER,
+            updated_at INTEGER
+        )
+    """)
+
+    db.commit()
+
+
+def garantir_config(guild_id):
+
+    cursor = bot.db.cursor()
+
+    cursor.execute(
+        "SELECT guild_id FROM guild_config WHERE guild_id = ?",
+        (guild_id,)
+    )
+
+    if cursor.fetchone() is None:
+
+        cursor.execute("""
+            INSERT INTO guild_config (guild_id)
+            VALUES (?)
+        """, (guild_id,))
+
+        bot.db.commit()
+
+
+def obter_config(guild_id):
+
+    garantir_config(guild_id)
+
+    cursor = bot.db.cursor()
+
+    cursor.execute("""
+        SELECT
+            welcome_channel,
+            welcome_enabled,
+            autorole_id,
+            log_channel,
+            anti_link,
+            anti_spam,
+            ticket_category,
+            ticket_enabled,
+            welcome_message
+        FROM guild_config
+        WHERE guild_id = ?
+    """, (guild_id,))
+
+    row = cursor.fetchone()
+
+    return {
+        "welcome_channel": row[0],
+        "welcome_enabled": bool(row[1]),
+        "autorole_id": row[2],
+        "log_channel": row[3],
+        "anti_link": bool(row[4]),
+        "anti_spam": bool(row[5]),
+        "ticket_category": row[6],
+        "ticket_enabled": bool(row[7]),
+        "welcome_message": row[8],
+    }
+
+
+def atualizar_config(guild_id, campo, valor):
+
+    garantir_config(guild_id)
+
+    campos_permitidos = {
+        "welcome_channel",
+        "welcome_enabled",
+        "autorole_id",
+        "log_channel",
+        "anti_link",
+        "anti_spam",
+        "ticket_category",
+        "ticket_enabled",
+        "welcome_message",
+    }
+
+    if campo not in campos_permitidos:
+        return
+
+    cursor = bot.db.cursor()
+
+    cursor.execute(
+        f"""
+        UPDATE guild_config
+        SET {campo} = ?
+        WHERE guild_id = ?
+        """,
+        (valor, guild_id)
+    )
+
+    bot.db.commit()
+
+
+# ============================================================
+# EMBEDS
+# ============================================================
+
+def embed_sucesso(titulo, descricao):
+
+    return discord.Embed(
+        title=f"✅ {titulo}",
+        description=descricao,
+        color=COR_SUCESSO
+    )
+
+
+def embed_erro(titulo, descricao):
+
+    return discord.Embed(
+        title=f"❌ {titulo}",
+        description=descricao,
+        color=COR_ERRO
+    )
+
+
+def embed_info(titulo, descricao):
+
+    return discord.Embed(
+        title=f"💠 {titulo}",
+        description=descricao,
+        color=COR_PRINCIPAL
+    )
+
+
+def embed_aviso(titulo, descricao):
+
+    return discord.Embed(
+        title=f"⚠️ {titulo}",
+        description=descricao,
+        color=COR_AVISO
+    )
+
+
+# ============================================================
+# PERMISSÕES
+# ============================================================
+
+def tem_permissao(interaction, permissao):
+
+    if not interaction.guild:
+        return False
+
+    return getattr(
+        interaction.user.guild_permissions,
+        permissao,
+        False
+    )
+
+
+def bot_pode_gerenciar_role(guild, role):
+
+    me = guild.me
+
+    if not me:
+        return False
+
+    return (
+        role < me.top_role
+        and not role.is_default()
+    )
+
+
+# ============================================================
+# LOGS
+# ============================================================
+
+async def enviar_log(guild, titulo, descricao, cor=COR_INFO):
+
+    config = obter_config(guild.id)
+
+    canal_id = config["log_channel"]
+
+    if not canal_id:
+        return
+
+    canal = guild.get_channel(canal_id)
+
+    if not canal:
+        return
+
+    embed = discord.Embed(
+        title=titulo,
+        description=descricao,
+        color=cor,
+        timestamp=datetime.now(timezone.utc)
+    )
+
+    try:
+        await canal.send(embed=embed)
+    except Exception:
+        pass
+
+
+# ============================================================
+# WELCOME
+# ============================================================
+
+@bot.event
+async def on_member_join(member):
+
+    config = obter_config(member.guild.id)
+
+    # Autorole
+    role_id = config["autorole_id"]
+
+    if role_id:
+
+        role = member.guild.get_role(role_id)
+
+        if role and bot_pode_gerenciar_role(member.guild, role):
+
+            try:
+                await member.add_roles(
+                    role,
+                    reason="VoidHelper - AutoRole"
+                )
+            except Exception:
+                pass
+
+    # Boas-vindas
+    if config["welcome_enabled"]:
+
+        channel_id = config["welcome_channel"]
+
+        if channel_id:
+
+            channel = member.guild.get_channel(channel_id)
+
+            if channel:
+
+                mensagem = config["welcome_message"]
+
+                if not mensagem:
+                    mensagem = (
+                        "Seja muito bem-vindo(a) **{user}** "
+                       "ao servidor **{server}**!"
+                    )
+
+                mensagem = mensagem.replace(
+                    "{user}",
+                    member.mention
+                )
+
+                mensagem = mensagem.replace(
+                    "{server}",
+                    member.guild.name
+                )
+
+                embed = discord.Embed(
+                    title="👋 Seja bem-vindo!",
+                    description=mensagem,
+                    color=COR_PRINCIPAL
+                )
+
+                embed.set_thumbnail(
+                    url=member.display_avatar.url
+                )
+
+                embed.set_footer(
+                    text=f"Membro #{member.guild.member_count}"
+                )
+
+                try:
+                    await channel.send(embed=embed)
+                except Exception:
+                    pass
+
+
+@bot.event
+async def on_member_remove(member):
+
+    config = obter_config(member.guild.id)
+
+    if not config["welcome_enabled"]:
+        return
+
+    channel_id = config["welcome_channel"]
+
+    if not channel_id:
+        return
+
+    channel = member.guild.get_channel(channel_id)
+
+    if not channel:
+        return
+
+    embed = discord.Embed(
+        title="👋 Até mais!",
+        description=(
+            f"**{member}** saiu do servidor."
+        ),
+        color=COR_ERRO
+    )
+
+    try:
+        await channel.send(embed=embed)
+    except Exception:
+        pass
+
+
+# ============================================================
+# ANTISPAM / ANTI-LINK
+# ============================================================
+
+URL_REGEX = re.compile(
+    r"(https?://|www\.|discord\.gg/|discord\.com/invite/)",
+    re.IGNORECASE
 )
-
-
-# ============================================================
-# EVENTO DE MENSAGEM
-# ============================================================
 
 
 @bot.event
@@ -1538,9 +536,15 @@ async def on_message(message):
     if message.author.bot:
         return
 
-    # --------------------------------------------------------
-    # Sistema de reações
-    # --------------------------------------------------------
+    if not message.guild:
+        await bot.process_commands(message)
+        return
+
+    config = obter_config(message.guild.id)
+
+    # ----------------------------------------
+    # REAÇÕES AUTOMÁTICAS
+    # ----------------------------------------
 
     if message.channel.id == CANAL_REACOES_ID:
 
@@ -1548,93 +552,2357 @@ async def on_message(message):
             await message.add_reaction("🟢")
             await message.add_reaction("⚖️")
             await message.add_reaction("🔴")
+        except Exception:
+            pass
 
-        except discord.HTTPException as erro:
-            print(
-                f"[REAÇÕES] Erro ao reagir: {erro}"
+    # ----------------------------------------
+    # ANTI-LINK
+    # ----------------------------------------
+
+    if config["anti_link"]:
+
+        conteudo = message.content.lower()
+
+        if URL_REGEX.search(conteudo):
+
+            permitido = any(
+                dominio in conteudo
+                for dominio in LINKS_PERMITIDOS
             )
+
+            if not permitido:
+
+                if message.author.guild_permissions.manage_messages:
+                    pass
+                else:
+
+                    try:
+                        await message.delete()
+                    except Exception:
+                        pass
+
+                    try:
+                        aviso = await message.channel.send(
+                            f"{message.author.mention} "
+                            "links não são permitidos aqui.",
+                            delete_after=5
+                        )
+                    except Exception:
+                        pass
+
+                    await enviar_log(
+                        message.guild,
+                        "🔗 Link bloqueado",
+                        f"{message.author.mention} enviou um link bloqueado.",
+                        COR_AVISO
+                    )
+
+                    return
+
+    # ----------------------------------------
+    # ANTI-SPAM
+    # ----------------------------------------
+
+    if config["anti_spam"]:
+
+        agora = time.monotonic()
+
+        chave = (
+            message.guild.id,
+            message.author.id
+        )
+
+        historico = bot.spam_cache[chave]
+
+        historico.append(agora)
+
+        while historico and agora - historico[0] > SPAM_JANELA:
+            historico.popleft()
+
+        if len(historico) >= SPAM_MAX_MENSAGENS:
+
+            if not message.author.guild_permissions.manage_messages:
+
+                try:
+                    await message.delete()
+                except Exception:
+                    pass
+
+                try:
+                    await message.author.timeout(
+                        discord.utils.utcnow()
+                        + discord.timedelta(seconds=30),
+                        reason="VoidHelper - Anti-Spam"
+                    )
+                except Exception:
+                    # Compatibilidade com versões onde discord.timedelta
+                    # não existe
+                    try:
+                        from datetime import timedelta
+
+                        await message.author.timeout(
+                            timedelta(seconds=30),
+                            reason="VoidHelper - Anti-Spam"
+                        )
+                    except Exception:
+                        pass
+
+                historico.clear()
+
+                await enviar_log(
+                    message.guild,
+                    "🛡️ Anti-Spam",
+                    f"{message.author.mention} foi detectado pelo anti-spam.",
+                    COR_AVISO
+                )
+
+                return
 
     await bot.process_commands(message)
 
 
 # ============================================================
-# COMANDO DE TESTE
+# COMANDO: AJUDA
 # ============================================================
 
+@bot.tree.command(
+    name="ajuda",
+    description="Mostra todos os comandos do VoidHelper."
+)
+async def ajuda(interaction: discord.Interaction):
 
-@bot.command(name="testeloja")
-@commands.has_permissions(administrator=True)
-async def teste_loja(ctx):
-
-    mensagem = await ctx.send(
-        "⏳ **Gerando preview da nova loja...**"
+    embed = discord.Embed(
+        title="💠 VoidHelper",
+        description=(
+            "Seu assistente completo para gerenciamento "
+            "e automação do servidor."
+        ),
+        color=COR_PRINCIPAL
     )
+
+    embed.add_field(
+        name="🛡️ Moderação",
+        value=(
+            "`/kick`\n"
+            "`/ban`\n"
+            "`/timeout`\n"
+            "`/warn`\n"
+            "`/warnings`"
+        ),
+        inline=True
+    )
+
+    embed.add_field(
+        name="⚙️ Servidor",
+        value=(
+            "`/config`\n"
+            "`/setup`\n"
+            "`/serverinfo`\n"
+            "`/userinfo`\n"
+            "`/avatar`"
+        ),
+        inline=True
+    )
+
+    embed.add_field(
+        name="🎫 Sistema",
+        value=(
+            "`/ticket`\n"
+            "`/painel-ticket`\n"
+            "`/cargo`"
+        ),
+        inline=True
+    )
+
+    embed.add_field(
+        name="🛒 Fortnite",
+        value=(
+            "`/loja`\n"
+            "`/testeloja`"
+        ),
+        inline=True
+    )
+
+    embed.add_field(
+        name="🔧 Segurança",
+        value=(
+            "`/antilink`\n"
+            "`/antispam`\n"
+            "`/autorole`\n"
+            "`/logs`\n"
+            "`/boasvindas`"
+        ),
+        inline=True
+    )
+
+    embed.set_footer(
+        text="VoidHelper • Administração inteligente"
+    )
+
+    await interaction.response.send_message(
+        embed=embed,
+        ephemeral=True
+    )
+
+
+# ============================================================
+# SERVER INFO
+# ============================================================
+
+@bot.tree.command(
+    name="serverinfo",
+    description="Mostra informações do servidor."
+)
+async def serverinfo(interaction):
+
+    guild = interaction.guild
+
+    if not guild:
+        return await interaction.response.send_message(
+            "Este comando só pode ser usado em um servidor.",
+            ephemeral=True
+        )
+
+    embed = discord.Embed(
+        title=f"🏠 {guild.name}",
+        color=COR_PRINCIPAL
+    )
+
+    embed.set_thumbnail(
+        url=guild.icon.url if guild.icon else discord.Embed.Empty
+    )
+
+    embed.add_field(
+        name="👥 Membros",
+        value=str(guild.member_count),
+        inline=True
+    )
+
+    embed.add_field(
+        name="💬 Canais",
+        value=str(len(guild.channels)),
+        inline=True
+    )
+
+    embed.add_field(
+        name="🎭 Cargos",
+        value=str(len(guild.roles)),
+        inline=True
+    )
+
+    embed.add_field(
+        name="🆔 ID",
+        value=str(guild.id),
+        inline=False
+    )
+
+    if guild.owner:
+        embed.add_field(
+            name="👑 Dono",
+            value=guild.owner.mention,
+            inline=True
+        )
+
+    await interaction.response.send_message(embed=embed)
+
+
+# ============================================================
+# USER INFO
+# ============================================================
+
+@bot.tree.command(
+    name="userinfo",
+    description="Mostra informações de um usuário."
+)
+@app_commands.describe(
+    usuario="Usuário que deseja consultar"
+)
+async def userinfo(
+    interaction,
+    usuario: discord.Member = None
+):
+
+    usuario = usuario or interaction.user
+
+    embed = discord.Embed(
+        title=f"👤 {usuario}",
+        color=usuario.color
+    )
+
+    embed.set_thumbnail(
+        url=usuario.display_avatar.url
+    )
+
+    embed.add_field(
+        name="🆔 ID",
+        value=str(usuario.id),
+        inline=False
+    )
+
+    embed.add_field(
+        name="📅 Conta criada",
+        value=discord.utils.format_dt(
+            usuario.created_at,
+            style="F"
+        ),
+        inline=False
+    )
+
+    if usuario.joined_at:
+
+        embed.add_field(
+            name="📥 Entrou no servidor",
+            value=discord.utils.format_dt(
+                usuario.joined_at,
+                style="F"
+            ),
+            inline=False
+        )
+
+    embed.add_field(
+        name="🎭 Cargo",
+        value=usuario.top_role.mention,
+        inline=True
+    )
+
+    await interaction.response.send_message(embed=embed)
+
+
+# ============================================================
+# AVATAR
+# ============================================================
+
+@bot.tree.command(
+    name="avatar",
+    description="Mostra o avatar de um usuário."
+)
+@app_commands.describe(
+    usuario="Usuário"
+)
+async def avatar(
+    interaction,
+    usuario: discord.Member = None
+):
+
+    usuario = usuario or interaction.user
+
+    embed = discord.Embed(
+        title=f"🖼️ Avatar de {usuario}",
+        color=COR_PRINCIPAL
+    )
+
+    embed.set_image(
+        url=usuario.display_avatar.url
+    )
+
+    await interaction.response.send_message(embed=embed)
+
+
+# ============================================================
+# KICK
+# ============================================================
+
+@bot.tree.command(
+    name="kick",
+    description="Expulsa um membro."
+)
+@app_commands.describe(
+    usuario="Usuário que será expulso",
+    motivo="Motivo da expulsão"
+)
+@app_commands.checks.has_permissions(kick_members=True)
+async def kick(
+    interaction,
+    usuario: discord.Member,
+    motivo: str = "Não informado"
+):
+
+    if usuario == interaction.user:
+        return await interaction.response.send_message(
+            "❌ Você não pode expulsar a si mesmo.",
+            ephemeral=True
+        )
+
+    if usuario.top_role >= interaction.user.top_role:
+        return await interaction.response.send_message(
+            "❌ Esse usuário possui um cargo igual ou superior ao seu.",
+            ephemeral=True
+        )
+
+    if usuario.top_role >= interaction.guild.me.top_role:
+        return await interaction.response.send_message(
+            "❌ Meu cargo precisa estar acima do usuário.",
+            ephemeral=True
+        )
 
     try:
 
-        await atualizar_loja(forcar=True)
+        await usuario.kick(reason=motivo)
 
-        await mensagem.edit(
-            content=(
-                "✅ **Preview da loja gerado!**\n"
-                "A mensagem da loja foi atualizada."
+        await interaction.response.send_message(
+            embed=embed_sucesso(
+                "Usuário expulso",
+                f"{usuario.mention} foi expulso.\n\n"
+                f"**Motivo:** {motivo}"
             )
         )
 
-    except Exception as erro:
+        await enviar_log(
+            interaction.guild,
+            "👢 Membro expulso",
+            f"{usuario} foi expulso por {interaction.user.mention}.\n"
+            f"**Motivo:** {motivo}",
+            COR_AVISO
+        )
+
+    except Exception as e:
+
+        await interaction.response.send_message(
+            f"❌ Não consegui expulsar o usuário.\n`{e}`",
+            ephemeral=True
+        )
+
+
+# ============================================================
+# BAN
+# ============================================================
+
+@bot.tree.command(
+    name="ban",
+    description="Bane um membro."
+)
+@app_commands.describe(
+    usuario="Usuário que será banido",
+    motivo="Motivo do banimento"
+)
+@app_commands.checks.has_permissions(ban_members=True)
+async def ban(
+    interaction,
+    usuario: discord.Member,
+    motivo: str = "Não informado"
+):
+
+    if usuario == interaction.user:
+        return await interaction.response.send_message(
+            "❌ Você não pode banir a si mesmo.",
+            ephemeral=True
+        )
+
+    if usuario.top_role >= interaction.user.top_role:
+        return await interaction.response.send_message(
+            "❌ Esse usuário possui um cargo igual ou superior ao seu.",
+            ephemeral=True
+        )
+
+    if usuario.top_role >= interaction.guild.me.top_role:
+        return await interaction.response.send_message(
+            "❌ Meu cargo precisa estar acima do usuário.",
+            ephemeral=True
+        )
+
+    try:
+
+        await usuario.ban(
+            reason=motivo,
+            delete_message_days=0
+        )
+
+        await interaction.response.send_message(
+            embed=embed_sucesso(
+                "Usuário banido",
+                f"{usuario} foi banido.\n\n"
+                f"**Motivo:** {motivo}"
+            )
+        )
+
+        await enviar_log(
+            interaction.guild,
+            "🔨 Membro banido",
+            f"{usuario} foi banido por {interaction.user.mention}.\n"
+            f"**Motivo:** {motivo}",
+            COR_ERRO
+        )
+
+    except Exception as e:
+
+        await interaction.response.send_message(
+            f"❌ Não consegui banir o usuário.\n`{e}`",
+            ephemeral=True
+        )
+
+
+# ============================================================
+# TIMEOUT
+# ============================================================
+
+@bot.tree.command(
+    name="timeout",
+    description="Coloca um membro em timeout."
+)
+@app_commands.describe(
+    usuario="Usuário",
+    minutos="Duração em minutos",
+    motivo="Motivo"
+)
+@app_commands.checks.has_permissions(moderate_members=True)
+async def timeout(
+    interaction,
+    usuario: discord.Member,
+    minutos: app_commands.Range[int, 1, 40320],
+    motivo: str = "Não informado"
+):
+
+    if usuario.top_role >= interaction.user.top_role:
+        return await interaction.response.send_message(
+            "❌ Você não pode aplicar timeout nesse usuário.",
+            ephemeral=True
+        )
+
+    try:
+
+        from datetime import timedelta
+
+        await usuario.timeout(
+            timedelta(minutes=minutos),
+            reason=motivo
+        )
+
+        await interaction.response.send_message(
+            embed=embed_sucesso(
+                "Timeout aplicado",
+                f"{usuario.mention} recebeu timeout por "
+                f"**{minutos} minutos**.\n\n"
+                f"**Motivo:** {motivo}"
+            )
+        )
+
+        await enviar_log(
+            interaction.guild,
+            "🔇 Timeout",
+            f"{usuario.mention} recebeu timeout de "
+            f"{minutos} minutos.\n"
+            f"Moderador: {interaction.user.mention}\n"
+            f"Motivo: {motivo}",
+            COR_AVISO
+        )
+
+    except Exception as e:
+
+        await interaction.response.send_message(
+            f"❌ Não consegui aplicar timeout.\n`{e}`",
+            ephemeral=True
+        )
+
+
+# ============================================================
+# WARN
+# ============================================================
+
+@bot.tree.command(
+    name="warn",
+    description="Adverte um membro."
+)
+@app_commands.describe(
+    usuario="Usuário",
+    motivo="Motivo da advertência"
+)
+@app_commands.checks.has_permissions(manage_messages=True)
+async def warn(
+    interaction,
+    usuario: discord.Member,
+    motivo: str = "Não informado"
+):
+
+    cursor = bot.db.cursor()
+
+    cursor.execute("""
+        INSERT INTO warnings
+        (guild_id, user_id, moderator_id, reason, created_at)
+        VALUES (?, ?, ?, ?, ?)
+    """, (
+        interaction.guild.id,
+        usuario.id,
+        interaction.user.id,
+        motivo,
+        int(time.time())
+    ))
+
+    bot.db.commit()
+
+    cursor.execute("""
+        SELECT COUNT(*)
+        FROM warnings
+        WHERE guild_id = ?
+        AND user_id = ?
+    """, (
+        interaction.guild.id,
+        usuario.id
+    ))
+
+    total = cursor.fetchone()[0]
+
+    await interaction.response.send_message(
+        embed=embed_aviso(
+            "Advertência aplicada",
+            f"{usuario.mention} recebeu uma advertência.\n\n"
+            f"**Motivo:** {motivo}\n"
+            f"**Total de advertências:** `{total}`"
+        )
+    )
+
+    await enviar_log(
+        interaction.guild,
+        "⚠️ Advertência",
+        f"{usuario.mention} recebeu uma advertência.\n"
+        f"Moderador: {interaction.user.mention}\n"
+        f"Motivo: {motivo}\n"
+        f"Total: {total}",
+        COR_AVISO
+    )
+
+
+# ============================================================
+# WARNINGS
+# ============================================================
+
+@bot.tree.command(
+    name="warnings",
+    description="Mostra as advertências de um usuário."
+)
+@app_commands.describe(
+    usuario="Usuário"
+)
+@app_commands.checks.has_permissions(manage_messages=True)
+async def warnings(
+    interaction,
+    usuario: discord.Member
+):
+
+    cursor = bot.db.cursor()
+
+    cursor.execute("""
+        SELECT reason, moderator_id, created_at
+        FROM warnings
+        WHERE guild_id = ?
+        AND user_id = ?
+        ORDER BY id DESC
+        LIMIT 10
+    """, (
+        interaction.guild.id,
+        usuario.id
+    ))
+
+    rows = cursor.fetchall()
+
+    embed = discord.Embed(
+        title=f"⚠️ Advertências — {usuario}",
+        color=COR_AVISO
+    )
+
+    if not rows:
+
+        embed.description = "Nenhuma advertência encontrada."
+
+    else:
+
+        linhas = []
+
+        for i, row in enumerate(rows, 1):
+
+            reason, moderator_id, created_at = row
+
+            data = f"<t:{created_at}:R>"
+
+            linhas.append(
+                f"**{i}.** {reason}\n"
+                f"Moderador: <@{moderator_id}> • {data}"
+            )
+
+        embed.description = "\n\n".join(linhas)
+
+    await interaction.response.send_message(
+        embed=embed,
+        ephemeral=True
+    )
+
+
+# ============================================================
+# CONFIGURAÇÃO
+# ============================================================
+
+@bot.tree.command(
+    name="config",
+    description="Mostra a configuração do VoidHelper."
+)
+@app_commands.checks.has_permissions(manage_guild=True)
+async def config(interaction):
+
+    cfg = obter_config(interaction.guild.id)
+
+    def canal(cid):
+        return f"<#{cid}>" if cid else "Não configurado"
+
+    def cargo(rid):
+        return f"<@&{rid}>" if rid else "Não configurado"
+
+    embed = discord.Embed(
+        title="⚙️ Configuração do VoidHelper",
+        color=COR_PRINCIPAL
+    )
+
+    embed.add_field(
+        name="👋 Boas-vindas",
+        value=(
+            f"Status: `{'ON' if cfg['welcome_enabled'] else 'OFF'}`\n"
+            f"Canal: {canal(cfg['welcome_channel'])}"
+        ),
+        inline=True
+    )
+
+    embed.add_field(
+        name="🎭 AutoRole",
+        value=cargo(cfg["autorole_id"]),
+        inline=True
+    )
+
+    embed.add_field(
+        name="📋 Logs",
+        value=canal(cfg["log_channel"]),
+        inline=True
+    )
+
+    embed.add_field(
+        name="🔗 Anti-Link",
+        value="🟢 Ativo" if cfg["anti_link"] else "🔴 Desativado",
+        inline=True
+    )
+
+    embed.add_field(
+        name="🛡️ Anti-Spam",
+        value="🟢 Ativo" if cfg["anti_spam"] else "🔴 Desativado",
+        inline=True
+    )
+
+    embed.add_field(
+        name="🎫 Tickets",
+        value="🟢 Ativo" if cfg["ticket_enabled"] else "🔴 Desativado",
+        inline=True
+    )
+
+    await interaction.response.send_message(
+        embed=embed,
+        ephemeral=True
+    )
+
+
+# ============================================================
+# SETUP
+# ============================================================
+
+@bot.tree.command(
+    name="setup",
+    description="Configura automaticamente recursos básicos."
+)
+@app_commands.checks.has_permissions(administrator=True)
+async def setup(interaction):
+
+    guild = interaction.guild
+
+    garantir_config(guild.id)
+
+    # Categoria
+    categoria = discord.utils.get(
+        guild.categories,
+        name="VOIDHELPER"
+    )
+
+    if not categoria:
+
+        try:
+            categoria = await guild.create_category(
+                "VOIDHELPER",
+                reason="VoidHelper Setup"
+            )
+        except Exception:
+            categoria = None
+
+    # Canal de logs
+    log_channel = discord.utils.find(
+        lambda c: c.name == "void-logs",
+        guild.text_channels
+    )
+
+    if not log_channel:
+
+        try:
+            log_channel = await guild.create_text_channel(
+                "void-logs",
+                category=categoria,
+                reason="VoidHelper Setup"
+            )
+        except Exception:
+            log_channel = None
+
+    # Canal de boas-vindas
+    welcome_channel = discord.utils.find(
+        lambda c: c.name == "boas-vindas",
+        guild.text_channels
+    )
+
+    if not welcome_channel:
+
+        try:
+            welcome_channel = await guild.create_text_channel(
+                "boas-vindas",
+                category=categoria,
+                reason="VoidHelper Setup"
+            )
+        except Exception:
+            welcome_channel = None
+
+    # Atualização
+    if log_channel:
+        atualizar_config(
+            guild.id,
+            "log_channel",
+            log_channel.id
+        )
+
+    if welcome_channel:
+        atualizar_config(
+            guild.id,
+            "welcome_channel",
+            welcome_channel.id
+        )
+
+    atualizar_config(
+        guild.id,
+        "welcome_enabled",
+        1
+    )
+
+    await interaction.response.send_message(
+        embed=embed_sucesso(
+            "Setup concluído",
+            (
+                "A configuração inicial do VoidHelper foi realizada.\n\n"
+                f"📋 Logs: {log_channel.mention if log_channel else 'Falhou'}\n"
+                f"👋 Boas-vindas: "
+                f"{welcome_channel.mention if welcome_channel else 'Falhou'}\n"
+                f"🎫 Categoria: "
+                f"{categoria.mention if categoria else 'Falhou'}"
+            )
+        )
+    )
+
+
+# ============================================================
+# BOAS-VINDAS
+# ============================================================
+
+@bot.tree.command(
+    name="boasvindas",
+    description="Configura o sistema de boas-vindas."
+)
+@app_commands.describe(
+    canal="Canal de boas-vindas",
+    mensagem="Mensagem personalizada"
+)
+@app_commands.checks.has_permissions(manage_guild=True)
+async def boasvindas(
+    interaction,
+    canal: discord.TextChannel,
+    mensagem: str = None
+):
+
+    atualizar_config(
+        interaction.guild.id,
+        "welcome_channel",
+        canal.id
+    )
+
+    atualizar_config(
+        interaction.guild.id,
+        "welcome_enabled",
+        1
+    )
+
+    if mensagem:
+        atualizar_config(
+            interaction.guild.id,
+            "welcome_message",
+            mensagem
+        )
+
+    await interaction.response.send_message(
+        embed=embed_sucesso(
+            "Boas-vindas configuradas",
+            (
+                f"Canal: {canal.mention}\n"
+                "Use `{user}` para mencionar o membro.\n"
+                "Use `{server}` para o nome do servidor."
+            )
+        )
+    )
+
+
+# ============================================================
+# AUTOROLE
+# ============================================================
+
+@bot.tree.command(
+    name="autorole",
+    description="Define o cargo automático."
+)
+@app_commands.describe(
+    cargo="Cargo que novos membros receberão"
+)
+@app_commands.checks.has_permissions(manage_roles=True)
+async def autorole(
+    interaction,
+    cargo: discord.Role
+):
+
+    if not bot_pode_gerenciar_role(
+        interaction.guild,
+        cargo
+    ):
+        return await interaction.response.send_message(
+            "❌ Meu cargo precisa estar acima desse cargo.",
+            ephemeral=True
+        )
+
+    atualizar_config(
+        interaction.guild.id,
+        "autorole_id",
+        cargo.id
+    )
+
+    await interaction.response.send_message(
+        embed=embed_sucesso(
+            "AutoRole configurado",
+            f"Novos membros receberão {cargo.mention}."
+        )
+    )
+
+
+# ============================================================
+# LOGS
+# ============================================================
+
+@bot.tree.command(
+    name="logs",
+    description="Define o canal de logs."
+)
+@app_commands.describe(
+    canal="Canal de logs"
+)
+@app_commands.checks.has_permissions(manage_guild=True)
+async def logs(
+    interaction,
+    canal: discord.TextChannel
+):
+
+    atualizar_config(
+        interaction.guild.id,
+        "log_channel",
+        canal.id
+    )
+
+    await interaction.response.send_message(
+        embed=embed_sucesso(
+            "Logs configurados",
+            f"Os logs serão enviados para {canal.mention}."
+        )
+    )
+
+
+# ============================================================
+# ANTI-LINK
+# ============================================================
+
+@bot.tree.command(
+    name="antilink",
+    description="Ativa ou desativa o anti-link."
+)
+@app_commands.describe(
+    ativo="Ativar ou desativar"
+)
+@app_commands.checks.has_permissions(manage_guild=True)
+async def antilink(
+    interaction,
+    ativo: bool
+):
+
+    atualizar_config(
+        interaction.guild.id,
+        "anti_link",
+        int(ativo)
+    )
+
+    await interaction.response.send_message(
+        embed=embed_sucesso(
+            "Anti-Link atualizado",
+            f"Status: **{'ATIVO' if ativo else 'DESATIVADO'}**"
+        )
+    )
+
+
+# ============================================================
+# ANTI-SPAM
+# ============================================================
+
+@bot.tree.command(
+    name="antispam",
+    description="Ativa ou desativa o anti-spam."
+)
+@app_commands.describe(
+    ativo="Ativar ou desativar"
+)
+@app_commands.checks.has_permissions(manage_guild=True)
+async def antispam(
+    interaction,
+    ativo: bool
+):
+
+    atualizar_config(
+        interaction.guild.id,
+        "anti_spam",
+        int(ativo)
+    )
+
+    await interaction.response.send_message(
+        embed=embed_sucesso(
+            "Anti-Spam atualizado",
+            f"Status: **{'ATIVO' if ativo else 'DESATIVADO'}**"
+        )
+    )
+
+
+# ============================================================
+# TICKETS
+# ============================================================
+
+class TicketView(discord.ui.View):
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="Abrir Ticket",
+        emoji="🎫",
+        style=discord.ButtonStyle.primary,
+        custom_id="voidhelper_ticket"
+    )
+    async def abrir_ticket(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button
+    ):
+
+        guild = interaction.guild
+
+        if not guild:
+            return
+
+        cursor = bot.db.cursor()
+
+        cursor.execute("""
+            SELECT channel_id
+            FROM tickets
+            WHERE guild_id = ?
+            AND user_id = ?
+        """, (
+            guild.id,
+            interaction.user.id
+        ))
+
+        existente = cursor.fetchone()
+
+        if existente:
+
+            canal_existente = guild.get_channel(
+                existente[0]
+            )
+
+            if canal_existente:
+
+                return await interaction.response.send_message(
+                    f"❌ Você já possui um ticket: "
+                    f"{canal_existente.mention}",
+                    ephemeral=True
+                )
+
+            cursor.execute(
+                """
+                DELETE FROM tickets
+                WHERE channel_id = ?
+                """,
+                (existente[0],)
+            )
+
+            bot.db.commit()
+
+        config = obter_config(guild.id)
+
+        categoria = None
+
+        if config["ticket_category"]:
+
+            categoria = guild.get_channel(
+                config["ticket_category"]
+            )
+
+        if not categoria:
+
+            categoria = discord.utils.get(
+                guild.categories,
+                name="TICKETS"
+            )
+
+        if not categoria:
+
+            try:
+
+                categoria = await guild.create_category(
+                    "TICKETS"
+                )
+
+                atualizar_config(
+                    guild.id,
+                    "ticket_category",
+                    categoria.id
+                )
+
+            except Exception:
+
+                categoria = None
+
+        nome = (
+            f"ticket-{interaction.user.name}"
+            .lower()
+            .replace(" ", "-")
+        )
+
+        nome = re.sub(
+            r"[^a-z0-9\-]",
+            "",
+            nome
+        )[:90]
+
+        overwrites = {
+
+            guild.default_role:
+                discord.PermissionOverwrite(
+                    view_channel=False
+                ),
+
+            interaction.user:
+                discord.PermissionOverwrite(
+                    view_channel=True,
+                    send_messages=True,
+                    read_message_history=True
+                ),
+
+            guild.me:
+                discord.PermissionOverwrite(
+                    view_channel=True,
+                    send_messages=True,
+                    manage_channels=True,
+                    read_message_history=True
+                )
+        }
+
+        try:
+
+            canal = await guild.create_text_channel(
+                nome,
+                category=categoria,
+                overwrites=overwrites,
+                reason="VoidHelper - Ticket"
+            )
+
+        except Exception as e:
+
+            return await interaction.response.send_message(
+                f"❌ Não consegui criar o ticket.\n`{e}`",
+                ephemeral=True
+            )
+
+        cursor.execute("""
+            INSERT OR REPLACE INTO tickets
+            (guild_id, user_id, channel_id)
+            VALUES (?, ?, ?)
+        """, (
+            guild.id,
+            interaction.user.id,
+            canal.id
+        ))
+
+        bot.db.commit()
+
+        embed = discord.Embed(
+            title="🎫 Ticket aberto",
+            description=(
+                f"Olá {interaction.user.mention}!\n\n"
+                "Explique sua solicitação abaixo.\n"
+                "Nossa equipe responderá assim que possível."
+            ),
+            color=COR_PRINCIPAL
+        )
+
+        await canal.send(
+            embed=embed,
+            view=CloseTicketView()
+        )
+
+        await interaction.response.send_message(
+            f"🎫 Ticket criado: {canal.mention}",
+            ephemeral=True
+        )
+
+
+class CloseTicketView(discord.ui.View):
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="Fechar Ticket",
+        emoji="🔒",
+        style=discord.ButtonStyle.danger,
+        custom_id="voidhelper_close_ticket"
+    )
+    async def fechar(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button
+    ):
+
+        if not (
+            interaction.user.guild_permissions.manage_channels
+            or interaction.user.guild_permissions.administrator
+        ):
+
+            cursor = bot.db.cursor()
+
+            cursor.execute("""
+                SELECT user_id
+                FROM tickets
+                WHERE channel_id = ?
+            """, (
+                interaction.channel.id,
+            ))
+
+            row = cursor.fetchone()
+
+            if not row or row[0] != interaction.user.id:
+
+                return await interaction.response.send_message(
+                    "❌ Você não pode fechar este ticket.",
+                    ephemeral=True
+                )
+
+        cursor = bot.db.cursor()
+
+        cursor.execute(
+            """
+            DELETE FROM tickets
+            WHERE channel_id = ?
+            """,
+            (interaction.channel.id,)
+        )
+
+        bot.db.commit()
+
+        await interaction.response.send_message(
+            "🔒 Ticket sendo fechado..."
+        )
+
+        await asyncio.sleep(2)
+
+        try:
+            await interaction.channel.delete(
+                reason="VoidHelper - Ticket fechado"
+            )
+        except Exception:
+            pass
+
+
+class TicketPanelView(discord.ui.View):
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="Abrir Ticket",
+        emoji="🎫",
+        style=discord.ButtonStyle.success,
+        custom_id="voidhelper_ticket_panel"
+    )
+    async def ticket(
+        self,
+        interaction,
+        button
+    ):
+
+        view = TicketView()
+
+        # Executa a mesma lógica através da view principal
+        await interaction.response.send_message(
+            "Clique abaixo para criar seu ticket:",
+            view=view,
+            ephemeral=True
+        )
+
+
+@bot.tree.command(
+    name="painel-ticket",
+    description="Envia o painel de tickets."
+)
+@app_commands.checks.has_permissions(manage_guild=True)
+async def painel_ticket(interaction):
+
+    embed = discord.Embed(
+        title="🎫 Central de Atendimento",
+        description=(
+            "Precisa de ajuda?\n\n"
+            "Clique no botão abaixo para abrir um ticket "
+            "privado com a equipe."
+        ),
+        color=COR_PRINCIPAL
+    )
+
+    embed.set_footer(
+        text="VoidHelper • Atendimento"
+    )
+
+    await interaction.channel.send(
+        embed=embed,
+        view=TicketView()
+    )
+
+    await interaction.response.send_message(
+        "✅ Painel enviado.",
+        ephemeral=True
+    )
+
+
+@bot.tree.command(
+    name="ticket",
+    description="Abre um ticket."
+)
+async def ticket(interaction):
+
+    view = TicketView()
+
+    await interaction.response.send_message(
+        "Clique no botão abaixo:",
+        view=view,
+        ephemeral=True
+    )
+
+
+# ============================================================
+# CARGOS POR BOTÃO
+# ============================================================
+
+class RoleView(discord.ui.View):
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="Receber cargo",
+        emoji="🎭",
+        style=discord.ButtonStyle.primary,
+        custom_id="voidhelper_role"
+    )
+    async def role_button(
+        self,
+        interaction,
+        button
+    ):
+
+        cursor = bot.db.cursor()
+
+        cursor.execute("""
+            SELECT role_id
+            FROM reaction_roles
+            WHERE message_id = ?
+        """, (
+            interaction.message.id,
+        ))
+
+        row = cursor.fetchone()
+
+        if not row:
+
+            return await interaction.response.send_message(
+                "❌ Este painel não está configurado.",
+                ephemeral=True
+            )
+
+        role = interaction.guild.get_role(row[0])
+
+        if not role:
+
+            return await interaction.response.send_message(
+                "❌ O cargo não existe mais.",
+                ephemeral=True
+            )
+
+        if not bot_pode_gerenciar_role(
+            interaction.guild,
+            role
+        ):
+
+            return await interaction.response.send_message(
+                "❌ Não consigo gerenciar este cargo.",
+                ephemeral=True
+            )
+
+        try:
+
+            if role in interaction.user.roles:
+
+                await interaction.user.remove_roles(role)
+
+                texto = f"Cargo {role.mention} removido."
+
+            else:
+
+                await interaction.user.add_roles(role)
+
+                texto = f"Cargo {role.mention} adicionado."
+
+            await interaction.response.send_message(
+                f"✅ {texto}",
+                ephemeral=True
+            )
+
+        except Exception as e:
+
+            await interaction.response.send_message(
+                f"❌ Erro: `{e}`",
+                ephemeral=True
+            )
+
+
+@bot.tree.command(
+    name="cargo",
+    description="Cria um painel para receber um cargo."
+)
+@app_commands.describe(
+    cargo="Cargo que será entregue"
+)
+@app_commands.checks.has_permissions(manage_roles=True)
+async def cargo(
+    interaction,
+    cargo: discord.Role
+):
+
+    if not bot_pode_gerenciar_role(
+        interaction.guild,
+        cargo
+    ):
+
+        return await interaction.response.send_message(
+            "❌ Meu cargo precisa estar acima do cargo escolhido.",
+            ephemeral=True
+        )
+
+    embed = discord.Embed(
+        title="🎭 Escolha de cargo",
+        description=(
+            f"Clique no botão abaixo para receber/remover "
+            f"o cargo {cargo.mention}."
+        ),
+        color=COR_PRINCIPAL
+    )
+
+    mensagem = await interaction.channel.send(
+        embed=embed,
+        view=RoleView()
+    )
+
+    cursor = bot.db.cursor()
+
+    cursor.execute("""
+        INSERT OR REPLACE INTO reaction_roles
+        (guild_id, message_id, role_id)
+        VALUES (?, ?, ?)
+    """, (
+        interaction.guild.id,
+        mensagem.id,
+        cargo.id
+    ))
+
+    bot.db.commit()
+
+    await interaction.response.send_message(
+        "✅ Painel de cargo criado.",
+        ephemeral=True
+    )
+
+
+# ============================================================
+# FORTNITE SHOP
+# ============================================================
+
+RARIDADE_CORES = {
+    "common": 0xB7B7B7,
+    "uncommon": 0x57F287,
+    "rare": 0x3498DB,
+    "epic": 0x9B59B6,
+    "legendary": 0xF1C40F,
+    "mythic": 0xF4B942,
+    "marvel": 0xE74C3C,
+    "dc": 0x3498DB,
+    "icon": 0xFF66CC,
+    "dark": 0x555555,
+    "slurp": 0x4CC9F0,
+    "gaminglegends": 0xE91E63,
+}
+
+
+def nome_raridade(rarity):
+
+    nomes = {
+        "common": "Comum",
+        "uncommon": "Incomum",
+        "rare": "Raro",
+        "epic": "Épico",
+        "legendary": "Lendário",
+        "mythic": "Mítico",
+        "marvel": "Marvel",
+        "dc": "DC",
+        "icon": "Ícone",
+        "dark": "Sombrio",
+        "slurp": "Slurp",
+        "gaminglegends": "Gaming Legends",
+    }
+
+    return nomes.get(
+        str(rarity or "").lower(),
+        "Especial"
+    )
+
+
+def cor_raridade(rarity):
+
+    return RARIDADE_CORES.get(
+        str(rarity or "").lower(),
+        COR_PRINCIPAL
+    )
+
+
+async def buscar_loja():
+
+    if not bot.http_session:
+        return None
+
+    try:
+
+        async with bot.http_session.get(
+            FORTNITE_SHOP_URL,
+            params={"language": IDIOMA}
+        ) as response:
+
+            if response.status != 200:
+                print(
+                    f"[LOJA] API retornou HTTP {response.status}"
+                )
+                return None
+
+            return await response.json()
+
+    except Exception as e:
+
+        print(f"[LOJA] Erro: {e}")
+        return None
+
+
+def extrair_itens(data):
+
+    if not data:
+        return []
+
+    items = []
+
+    shop_entries = (
+        data.get("data", {})
+        .get("entries", [])
+    )
+
+    vistos = set()
+
+    for entry in shop_entries:
+
+        if len(items) >= MAX_ITENS:
+            break
+
+        br_items = entry.get("brItems") or []
+
+        if not br_items:
+            continue
+
+        item = br_items[0]
+
+        item_id = item.get("id")
+
+        if not item_id:
+            continue
+
+        if item_id in vistos:
+            continue
+
+        vistos.add(item_id)
+
+        name = (
+            item.get("name")
+            or item.get("description")
+            or "Item desconhecido"
+        )
+
+        rarity = (
+            item.get("rarity", {})
+            .get("value")
+            if isinstance(item.get("rarity"), dict)
+            else item.get("rarity")
+        )
+
+        type_data = item.get("type") or {}
+
+        category = (
+            type_data.get("displayValue")
+            or type_data.get("value")
+            or "Item"
+        )
+
+        images = item.get("images") or {}
+
+        image = (
+            images.get("featured")
+            or images.get("icon")
+            or images.get("background")
+        )
+
+        price = entry.get("finalPrice")
+
+        if price is None:
+            price = entry.get("regularPrice")
+
+        if price is None:
+            price = 0
+
+        items.append({
+            "id": item_id,
+            "name": name,
+            "rarity": rarity,
+            "category": category,
+            "image": image,
+            "price": price,
+        })
+
+    return items
+
+
+async def baixar_imagem(session, url):
+
+    if not url:
+        return None
+
+    try:
+
+        async with session.get(url) as response:
+
+            if response.status != 200:
+                return None
+
+            content_length = response.headers.get(
+                "Content-Length"
+            )
+
+            if content_length:
+
+                try:
+
+                    if int(content_length) > MAX_IMAGE_BYTES:
+                        return None
+
+                except ValueError:
+                    pass
+
+            data = await response.read(
+                MAX_IMAGE_BYTES + 1
+            )
+
+            if len(data) > MAX_IMAGE_BYTES:
+                return None
+
+            return data
+
+    except Exception:
+        return None
+
+
+# ============================================================
+# HASH DA LOJA
+# ============================================================
+
+def gerar_hash_loja(itens):
+
+    texto = "|".join(
+        f"{item['id']}:{item['price']}"
+        for item in itens
+    )
+
+    return hashlib.sha256(
+        texto.encode()
+    ).hexdigest()
+
+
+def obter_shop_state():
+
+    cursor = bot.db.cursor()
+
+    cursor.execute("""
+        SELECT shop_hash, message_id, updated_at
+        FROM shop_state
+        WHERE id = 1
+    """)
+
+    row = cursor.fetchone()
+
+    if not row:
+        return None, None, None
+
+    return row
+
+
+def salvar_shop_state(
+    shop_hash,
+    message_id,
+    updated_at
+):
+
+    bot.db.execute("""
+        INSERT OR REPLACE INTO shop_state
+        (id, shop_hash, message_id, updated_at)
+        VALUES (1, ?, ?, ?)
+    """, (
+        shop_hash,
+        message_id,
+        updated_at
+    ))
+
+    bot.db.commit()
+
+
+# ============================================================
+# GERADOR DA IMAGEM DA LOJA
+# ============================================================
+
+async def gerar_imagem_loja(itens):
+
+    try:
+
+        from PIL import Image, ImageDraw, ImageFont
+
+    except ImportError:
+
+        return None
+
+    largura = 1200
+    card_largura = 220
+    card_altura = 290
+
+    colunas = 5
+
+    linhas = (
+        (len(itens) + colunas - 1)
+        // colunas
+    )
+
+    altura = 180 + (
+        linhas * (card_altura + 20)
+    ) + 80
+
+    imagem = Image.new(
+        "RGB",
+        (largura, altura),
+        (12, 14, 20)
+    )
+
+    draw = ImageDraw.Draw(imagem)
+
+    # Fundo
+    for y in range(altura):
+
+        valor = int(
+            14 + (y / max(altura, 1)) * 16
+        )
+
+        draw.line(
+            [(0, y), (largura, y)],
+            fill=(valor, valor, valor + 8)
+        )
+
+    # Cabeçalho
+    draw.rectangle(
+        (0, 0, largura, 145),
+        fill=(20, 20, 35)
+    )
+
+    fonte_titulo = ImageFont.truetype(
+        "DejaVuSans-Bold.ttf",
+        46
+    )
+
+    fonte_sub = ImageFont.truetype(
+        "DejaVuSans.ttf",
+        20
+    )
+
+    draw.text(
+        (40, 28),
+        "FORTNITE ITEM SHOP",
+        font=fonte_titulo,
+        fill=(255, 255, 255)
+    )
+
+    draw.text(
+        (42, 88),
+        "LOJA ATUALIZADA AUTOMATICAMENTE PELO VOIDHELPER",
+        font=fonte_sub,
+        fill=(170, 170, 190)
+    )
+
+    agora = datetime.now()
+
+    draw.text(
+        (40, 118),
+        agora.strftime("%d/%m/%Y • %H:%M"),
+        font=fonte_sub,
+        fill=(125, 130, 255)
+    )
+
+    # Painel
+    session = bot.http_session
+
+    for index, item in enumerate(itens):
+
+        coluna = index % colunas
+        linha = index // colunas
+
+        x = 40 + coluna * 235
+        y = 165 + linha * (card_altura + 20)
+
+        rarity_color = cor_raridade(
+            item["rarity"]
+        )
+
+        # Card
+        draw.rounded_rectangle(
+            (
+                x,
+                y,
+                x + card_largura,
+                y + card_altura
+            ),
+            radius=14,
+            fill=(25, 27, 36),
+            outline=rarity_color,
+            width=3
+        )
+
+        # Imagem
+        image_data = await baixar_imagem(
+            session,
+            item["image"]
+        )
+
+        if image_data:
+
+            try:
+
+                item_img = Image.open(
+                    io.BytesIO(image_data)
+                ).convert("RGBA")
+
+                item_img.thumbnail(
+                    (190, 180)
+                )
+
+                px = (
+                    x
+                    + (card_largura - item_img.width)
+                    // 2
+                )
+
+                py = y + 12
+
+                imagem.paste(
+                    item_img,
+                    (px, py),
+                    item_img
+                )
+
+            except Exception:
+                pass
+
+        # Raridade
+        draw.rounded_rectangle(
+            (
+                x + 10,
+                y + 194,
+                x + card_largura - 10,
+                y + 222
+            ),
+            radius=7,
+            fill=rarity_color
+        )
+
+        fonte_raridade = ImageFont.truetype(
+            "DejaVuSans-Bold.ttf",
+            13
+        )
+
+        draw.text(
+            (x + 20, y + 200),
+            nome_raridade(item["rarity"]),
+            font=fonte_raridade,
+            fill=(255, 255, 255)
+        )
+
+        fonte_nome = ImageFont.truetype(
+            "DejaVuSans-Bold.ttf",
+            15
+        )
+
+        nome = str(item["name"])
+
+        if len(nome) > 24:
+            nome = nome[:21] + "..."
+
+        draw.text(
+            (x + 12, y + 230),
+            nome,
+            font=fonte_nome,
+            fill=(255, 255, 255)
+        )
+
+        fonte_preco = ImageFont.truetype(
+            "DejaVuSans-Bold.ttf",
+            15
+        )
+
+        draw.text(
+            (x + 12, y + 255),
+            f"🪙 {item['price']} V-Bucks",
+            font=fonte_preco,
+            fill=(255, 220, 80)
+        )
+
+    # Rodapé
+    rodape_y = altura - 55
+
+    draw.text(
+        (40, rodape_y),
+        f"VoidHelper • {len(itens)} itens encontrados",
+        font=fonte_sub,
+        fill=(130, 130, 150)
+    )
+
+    output = io.BytesIO()
+
+    imagem.save(
+        output,
+        format="JPEG",
+        quality=78,
+        optimize=True
+    )
+
+    output.seek(0)
+
+    # Liberar memória
+    imagem.close()
+    del imagem
+
+    gc.collect()
+
+    return output
+
+
+# ============================================================
+# ATUALIZAÇÃO DA LOJA
+# ============================================================
+
+async def atualizar_loja(forcar=False):
+
+    data = await buscar_loja()
+
+    if not data:
+        return False
+
+    itens = extrair_itens(data)
+
+    if not itens:
+        print("[LOJA] Nenhum item encontrado.")
+        return False
+
+    shop_hash = gerar_hash_loja(itens)
+
+    old_hash, old_message_id, old_updated = obter_shop_state()
+
+    if (
+        not forcar
+        and old_hash
+        and old_hash == shop_hash
+    ):
+        return False
+
+    canal = bot.get_channel(CANAL_LOJA_ID)
+
+    if not canal:
+
+        try:
+            canal = await bot.fetch_channel(
+                CANAL_LOJA_ID
+            )
+        except Exception:
+            return False
+
+    imagem = await gerar_imagem_loja(itens)
+
+    if not imagem:
+        return False
+
+    arquivo = discord.File(
+        imagem,
+        filename="voidhelper_loja.jpg"
+    )
+
+    embed = discord.Embed(
+        title="🛒 Loja Fortnite",
+        description=(
+            "A loja foi atualizada!\n\n"
+            "Confira os itens disponíveis abaixo."
+        ),
+        color=COR_FORTNITE,
+        timestamp=datetime.now(timezone.utc)
+    )
+
+    embed.add_field(
+        name="📦 Itens",
+        value=str(len(itens)),
+        inline=True
+    )
+
+    embed.add_field(
+        name="🕐 Atualização",
+        value=discord.utils.format_dt(
+            datetime.now(timezone.utc),
+            style="R"
+        ),
+        inline=True
+    )
+
+    embed.set_image(
+        url="attachment://voidhelper_loja.jpg"
+    )
+
+    embed.set_footer(
+        text="VoidHelper • Fortnite Item Shop"
+    )
+
+    mensagem = None
+
+    if old_message_id:
+
+        try:
+            mensagem = await canal.fetch_message(
+                old_message_id
+            )
+        except Exception:
+            mensagem = None
+
+    try:
+
+        if mensagem:
+
+            await mensagem.edit(
+                content=None,
+                embed=embed,
+                attachments=[arquivo]
+            )
+
+        else:
+
+            mensagem = await canal.send(
+                embed=embed,
+                file=arquivo
+            )
+
+        salvar_shop_state(
+            shop_hash,
+            mensagem.id,
+            int(time.time())
+        )
 
         print(
-            f"[TESTE] Erro: {erro}"
+            f"[LOJA] Atualizada. {len(itens)} itens."
         )
+
+        return True
+
+    except Exception as e:
+
+        print(
+            f"[LOJA] Erro ao enviar loja: {e}"
+        )
+
+        return False
+
+    finally:
+
+        try:
+            imagem.close()
+        except Exception:
+            pass
+
+        gc.collect()
+
+
+# ============================================================
+# COMANDO LOJA
+# ============================================================
+
+@bot.tree.command(
+    name="loja",
+    description="Mostra a situação da loja Fortnite."
+)
+async def loja(interaction):
+
+    await interaction.response.defer(
+        ephemeral=True
+    )
+
+    data = await buscar_loja()
+
+    if not data:
+
+        return await interaction.followup.send(
+            "❌ Não foi possível consultar a loja."
+        )
+
+    itens = extrair_itens(data)
+
+    if not itens:
+
+        return await interaction.followup.send(
+            "❌ Nenhum item encontrado."
+        )
+
+    embed = discord.Embed(
+        title="🛒 Loja Fortnite",
+        description=(
+            f"A loja possui **{len(itens)} itens** "
+            "registrados atualmente.\n\n"
+            f"Confira a loja completa em <#{CANAL_LOJA_ID}>."
+        ),
+        color=COR_FORTNITE
+    )
+
+    await interaction.followup.send(
+        embed=embed
+    )
+
+
+# ============================================================
+# TESTE DA LOJA
+# ============================================================
+
+@bot.tree.command(
+    name="testeloja",
+    description="Força uma atualização da loja Fortnite."
+)
+@app_commands.checks.has_permissions(administrator=True)
+async def testeloja(interaction):
+
+    await interaction.response.defer(
+        ephemeral=True
+    )
+
+    sucesso = await atualizar_loja(
+        forcar=True
+    )
+
+    if sucesso:
+
+        await interaction.followup.send(
+            "✅ Loja Fortnite atualizada com sucesso."
+        )
+
+    else:
+
+        await interaction.followup.send(
+            "❌ Não foi possível atualizar a loja."
+        )
+
+
+# ============================================================
+# COMANDO PREFIXO ANTIGO
+# ============================================================
+
+@bot.command(
+    name="testeloja"
+)
+@commands.has_permissions(administrator=True)
+async def testeloja_prefix(ctx):
+
+    mensagem = await ctx.send(
+        "⏳ Atualizando a loja..."
+    )
+
+    sucesso = await atualizar_loja(
+        forcar=True
+    )
+
+    if sucesso:
 
         await mensagem.edit(
-            content=(
-                "❌ **Erro ao gerar a loja.**\n"
-                f"`{erro}`"
-            )
+            content="✅ Loja atualizada."
         )
 
+    else:
 
-@teste_loja.error
-async def teste_loja_error(ctx, erro):
-
-    if isinstance(
-        erro,
-        commands.MissingPermissions
-    ):
-        await ctx.send(
-            "❌ Você precisa ser administrador para usar esse comando.",
-            delete_after=8
+        await mensagem.edit(
+            content="❌ Não foi possível atualizar a loja."
         )
 
 
 # ============================================================
-# TAREFA AUTOMÁTICA
+# TASK DA LOJA
 # ============================================================
-
 
 @tasks.loop(seconds=INTERVALO_VERIFICACAO)
 async def verificar_loja():
 
     try:
+
         await atualizar_loja()
 
-    except Exception as erro:
+    except Exception as e:
 
         print(
-            f"[LOOP] Erro inesperado: {erro}"
+            f"[LOJA] Erro na verificação automática: {e}"
         )
 
-        gc.collect()
+    # Limpeza de memória
+    if len(bot.spam_cache) > 2000:
+
+        bot.spam_cache.clear()
+
+    gc.collect()
 
 
 @verificar_loja.before_loop
-async def antes_verificar_loja():
+async def antes_loja():
 
     await bot.wait_until_ready()
 
+
+# ============================================================
+# ERROS DOS SLASH COMMANDS
+# ============================================================
+
+@bot.tree.error
+async def on_app_command_error(
+    interaction,
+    error
+):
+
+    if isinstance(
+        error,
+        app_commands.errors.MissingPermissions
+    ):
+
+        mensagem = (
+            "❌ Você não possui permissão "
+            "para utilizar este comando."
+        )
+
+    elif isinstance(
+        error,
+        app_commands.errors.CommandOnCooldown
+    ):
+
+        mensagem = (
+            f"⏳ Aguarde {error.retry_after:.1f}s."
+        )
+
+    else:
+
+        print(
+            f"[COMANDO] Erro: {error}"
+        )
+
+        mensagem = (
+            "❌ Ocorreu um erro ao executar o comando."
+        )
+
+    try:
+
+        if interaction.response.is_done():
+
+            await interaction.followup.send(
+                mensagem,
+                ephemeral=True
+            )
+
+        else:
+
+            await interaction.response.send_message(
+                mensagem,
+                ephemeral=True
+            )
+
+    except Exception:
+        pass
+
+
+# ============================================================
+# ERROS DOS COMANDOS PREFIXADOS
+# ============================================================
+
+@bot.event
+async def on_command_error(
+    ctx,
+    error
+):
+
+    if isinstance(
+        error,
+        commands.MissingPermissions
+    ):
+
+        await ctx.send(
+            "❌ Você não possui permissão para isso.",
+            delete_after=5
+        )
+
+        return
+
+    if isinstance(
+        error,
+        commands.CommandNotFound
+    ):
+        return
+
     print(
-        "[LOJA] Sistema automático iniciado."
+        f"[PREFIXO] Erro: {error}"
     )
 
 
@@ -1642,79 +2910,65 @@ async def antes_verificar_loja():
 # READY
 # ============================================================
 
-
 @bot.event
 async def on_ready():
 
-    print("=" * 60)
+    print("=" * 50)
+    print("VOIDHELPER ONLINE")
+    print("=" * 50)
 
-    print(
-        f"[BOT] Logado como "
-        f"{bot.user} "
-        f"(ID: {bot.user.id})"
-    )
-
-    print(
-        f"[BOT] Servidores: "
-        f"{len(bot.guilds)}"
-    )
-
-    print(
-        "[BOT] VoidHelper online."
-    )
-
-    print("=" * 60)
+    print(f"Bot: {bot.user}")
+    print(f"ID: {bot.user.id}")
+    print(f"Servidores: {len(bot.guilds)}")
+    print(f"RAM: modo otimizado")
+    print("=" * 50)
 
     if not verificar_loja.is_running():
 
         verificar_loja.start()
 
+
+# ============================================================
+# ENCERRAMENTO
+# ============================================================
+
+async def main():
+
+    if not TOKEN:
+
         print(
-            "[LOJA] Loop de verificação iniciado."
+            "ERRO: DISCORD_TOKEN não configurado."
         )
 
-
-# ============================================================
-# TRATAMENTO DE ERROS
-# ============================================================
-
-
-@bot.event
-async def on_command_error(ctx, erro):
-
-    if isinstance(
-        erro,
-        commands.CommandNotFound
-    ):
         return
 
-    if isinstance(
-        erro,
-        commands.MissingPermissions
-    ):
-        await ctx.send(
-            "❌ Você não possui permissão para usar esse comando.",
-            delete_after=8
+    try:
+
+        await bot.start(TOKEN)
+
+    except KeyboardInterrupt:
+
+        pass
+
+    finally:
+
+        if not bot.is_closed():
+
+            await bot.close()
+
+
+# ============================================================
+# START
+# ============================================================
+
+if __name__ == "__main__":
+
+    try:
+
+        asyncio.run(main())
+
+    except KeyboardInterrupt:
+
+        print(
+            "\nVoidHelper encerrado."
         )
-        return
-
-    print(
-        f"[COMANDO] Erro: {erro}"
-    )
-
-
-# ============================================================
-# INICIALIZAÇÃO
-# ============================================================
-
-
-if not TOKEN:
-
-    raise RuntimeError(
-        "A variável de ambiente DISCORD_TOKEN não foi encontrada."
-    )
-
-
-print("[SISTEMA] Iniciando VoidHelper...")
-
-bot.run(TOKEN)
